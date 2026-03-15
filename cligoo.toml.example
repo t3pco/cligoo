@@ -1,0 +1,48 @@
+# Degoo CLI Configuration
+# Location: ~/.config/cligoo/config.toml
+#
+# Preferences and API settings only — credentials are stored securely
+# in the system keyring (macOS Keychain / GNOME Keyring).
+# Run `cligoo login` or `cligoo login --browser` to authenticate.
+
+[api]
+# Degoo GraphQL API endpoint — same for all users; update only if Degoo migrates.
+# The built-in default is used when this key is absent.
+# graphql_url = "https://production-appsync.degoo.com/graphql"
+
+# AWS AppSync client key used in every GraphQL request.
+# The key below is the one visible in any browser's network inspector at
+# app.degoo.com — it is NOT a secret.  Uncomment and update only if Degoo
+# rotates the key.  The DEGOO_API_KEY environment variable takes precedence.
+# api_key = "da2-vs6twz5vnjdavpqndtbzg3prra"
+
+# Request timeout in seconds
+timeout = 60
+
+# Enable verbose HTTP logging (true/false)
+debug = false
+
+[session]
+# Directory for token persistence (fallback when keyring unavailable)
+token_dir = "__TOKEN_DIR__"
+
+# Auto re-login when token expires (true/false)
+auto_relogin = true
+
+# Default remote destination for uploads when -t is not specified.
+# Must be an absolute Degoo path (e.g. "/Web", "/Web/Photos").
+default_upload_dir = "/Web"
+
+[output]
+# Default output format: "table" or "json"
+format = "table"
+
+# Show compact JSON (single line) instead of pretty-printed
+compact_json = false
+
+[advanced]
+# Allow `cd` and `pwd` to be used as standalone commands outside the shell.
+# By default they are restricted to `cligoo shell` to avoid stale working-
+# directory surprises across sessions.  Set to true only if you understand
+# that the working directory persists between invocations.
+# standalone_nav = false

@@ -1,0 +1,10 @@
+httpx>=0.25
+rich>=13.0
+click>=8.0
+keyring>=24.0
+humanize>=4.0
+pyjwt>=2.0
+
+# Optional: browser-based token refresh (cligoo token --update)
+# pip install 'cligoo[browser]' && playwright install chromium
+# playwright>=1.40
