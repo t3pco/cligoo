@@ -805,7 +805,8 @@ def _build_tree(
 def _compute_folder_size(client: "DegooClient", folder_id: str) -> tuple[int, int, int]:
     """Recursively walk *folder_id* and return ``(total_bytes, file_count, folder_count)``.
 
-    Uses BFS with a visited set to guard against API cycles.
+    Uses BFS + ``iter_dir`` so only one API page is live in memory at a time.
+    A visited-ID set guards against cycles in the folder graph.
     """
     total_bytes = 0
     file_count = 0
@@ -815,22 +816,21 @@ def _compute_folder_size(client: "DegooClient", folder_id: str) -> tuple[int, in
     while queue:
         current_id = queue.pop()
         try:
-            children = client.list_dir(current_id, limit=None)
+            for child in client.iter_dir(current_id):
+                child_id = child.get("ID", "")
+                if child.get("Category", 0) in FOLDER_CATEGORIES:
+                    folder_count += 1
+                    if child_id and child_id not in visited:
+                        visited.add(child_id)
+                        queue.append(child_id)
+                else:
+                    file_count += 1
+                    try:
+                        total_bytes += int(child.get("Size") or 0)
+                    except (ValueError, TypeError):
+                        pass
         except DegooAPIError:
             continue
-        for child in children:
-            child_id = child.get("ID", "")
-            if child.get("Category", 0) in FOLDER_CATEGORIES:
-                folder_count += 1
-                if child_id and child_id not in visited:
-                    visited.add(child_id)
-                    queue.append(child_id)
-            else:
-                file_count += 1
-                try:
-                    total_bytes += int(child.get("Size") or 0)
-                except (ValueError, TypeError):
-                    pass
     return total_bytes, file_count, folder_count
 
 

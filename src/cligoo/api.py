@@ -256,6 +256,37 @@ class DegooClient:
 
         return items if limit is None else items[:limit]
 
+    def iter_dir(
+        self,
+        parent_id: str = "0",
+        *,
+        order: int = DEFAULT_ORDER,
+    ):
+        """Yield children of a folder one page at a time (generator).
+
+        Unlike :meth:`list_dir`, this never accumulates all results in memory —
+        each page is yielded item-by-item and then discarded.  Use this when
+        traversing large trees where holding all items in RAM is impractical.
+        """
+        next_token: Optional[str] = None
+        while True:
+            variables: dict[str, Any] = {
+                "ParentID": str(parent_id),
+                "Limit": MAX_LIMIT,
+                "Order": order,
+            }
+            if next_token:
+                variables["NextToken"] = next_token
+
+            data = self._gql(GET_FILE_CHILDREN, variables, operation="GetFileChildren5")
+            result = data["getFileChildren5"]
+            for item in result.get("Items") or []:
+                yield item
+
+            next_token = result.get("NextToken")
+            if not next_token:
+                break
+
     def get_item(self, item_id: str) -> dict:
         """Get metadata for a single item by ID."""
         data = self._gql(

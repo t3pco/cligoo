@@ -493,7 +493,7 @@ def test_info_folder_shows_content_size():
     file_b = {"ID": "202", "Name": "b.jpg", "Category": 6, "Size": "2000000", "URL": "https://x"}
     mock.get_item.return_value = folder
     mock.is_folder.side_effect = lambda item: item.get("Category", 0) in {1, 2, 3}
-    mock.list_dir.side_effect = lambda fid, **_: [file_a, file_b] if fid == "200" else []
+    mock.iter_dir.side_effect = lambda fid, **_: iter([file_a, file_b] if fid == "200" else [])
     with _patch_client(mock):
         result = _runner().invoke(main, ["info", "200"])
     assert result.exit_code == 0, result.output
@@ -526,7 +526,7 @@ def test_info_folder_no_size_flag():
         result = _runner().invoke(main, ["info", "--no-size", "200"])
     assert result.exit_code == 0, result.output
     assert "skipped" in result.output
-    mock.list_dir.assert_not_called()
+    mock.iter_dir.assert_not_called()
 
 
 # ── search ────────────────────────────────────────────────────────────────────
