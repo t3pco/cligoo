@@ -100,8 +100,8 @@ Key areas covered:
 Tests for `cligoo.config` — configuration persistence and key resolution.
 
 All tests use the `isolated_config` fixture, which redirects
-`CONFIG_DIR` / `CONFIG_FILE` to a `tmp_path` so the developer's own
-`~/.config/cligoo/config.json` is never touched.
+`CONFIG_DIR` / `TOML_FILE` / `CONFIG_FILE` to a `tmp_path` so the developer's own
+`~/.config/cligoo/config.toml` is never touched.
 
 | Test | What it covers |
 | --- | --- |

@@ -50,6 +50,7 @@ from .config import (
     get_output_format,
     get_standalone_nav_enabled,
     get_transfer_workers,
+    get_upload_retries,
 )
 from .constants import CATEGORY_NAMES, FOLDER_CATEGORIES
 
@@ -188,8 +189,11 @@ def _client() -> DegooClient:
     from .auth import get_token as _get_token
 
     try:
-        token = _get_token()  # eagerly validate — raises AuthError if no valid token
-        return DegooClient(token=token)  # reuse token; avoids a second round-trip
+        _get_token()  # eagerly validate — raises AuthError if no valid token
+        # Do NOT pass token= explicitly: DegooClient.token calls get_token() on
+        # every request so short-lived access tokens are refreshed transparently
+        # during long-running uploads/downloads without interrupting the transfer.
+        return DegooClient()
     except AuthError as e:
         _err(e)
         raise SystemExit(1)
@@ -1300,7 +1304,7 @@ def _upload_one(
                 last[0] = uploaded
 
     try:
-        client.upload(filepath, parent_id, name=name, progress_callback=cb)
+        client.upload(filepath, parent_id, name=name, progress_callback=cb, upload_retries=get_upload_retries())
         # Ensure per-file bar and overall both reach 100 %
         remaining = file_size - last[0]
         progress.update(task_id, completed=file_size)

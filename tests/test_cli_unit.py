@@ -1112,12 +1112,14 @@ def test_unknown_command():
 # ── _client() token handling ──────────────────────────────────────────────────
 
 
-def test_client_passes_fetched_token_to_degooclient():
-    """_client() must not discard the fetched token and let DegooClient re-fetch it.
+def test_client_validates_token_and_creates_dynamic_client():
+    """_client() validates auth eagerly but creates DegooClient without a fixed token.
 
-    Regression guard for the double-fetch bug: previously _client() called
-    get_token() to validate but then constructed DegooClient() with no token,
-    causing a second get_token() call on the first API request.
+    DegooClient must be constructed with no explicit token so that its .token
+    property calls get_token() on every request — this enables transparent
+    token refresh during long-running uploads/downloads (5+ hours).
+    Passing token= explicitly would snapshot the token at startup and cause
+    all requests to fail after the access token expires (~1 hour).
     """
 
     from cligoo.cli import _client
@@ -1129,18 +1131,15 @@ def test_client_passes_fetched_token_to_degooclient():
         return "the-token"
 
     with (
-        # _client() does `from .auth import get_token` locally, so patch the
-        # canonical location cligoo.auth.get_token.
         patch("cligoo.auth.get_token", side_effect=fake_get_token),
         patch("cligoo.cli.DegooClient") as MockClient,
     ):
         _client()
 
-    # get_token must have been called exactly once (in _client) —
-    # DegooClient should receive the token and not fetch it again.
-    assert len(get_token_calls) == 1, f"get_token called {len(get_token_calls)} times; expected exactly 1"
-    # The token must have been forwarded to DegooClient's constructor.
-    MockClient.assert_called_once_with(token="the-token")
+    # get_token is called once for eager validation in _client().
+    assert len(get_token_calls) == 1, f"get_token called {len(get_token_calls)} times; expected 1"
+    # DegooClient must NOT receive a fixed token — dynamic refresh requires token=None.
+    MockClient.assert_called_once_with()
 
 
 # ── Relative path resolution (_resolve_item CWD-awareness) ────────────────────

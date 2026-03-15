@@ -522,6 +522,7 @@ class DegooClient:
         progress_callback: Any = None,
         verify: bool = False,
         max_retries: int = 3,
+        upload_retries: int = 5,
     ) -> str:
         """Upload a local file to Degoo.
 
@@ -534,6 +535,8 @@ class DegooClient:
             progress_callback: Optional callback for upload progress
             verify: Whether to verify the upload succeeded (detects GCS linkage issues)
             max_retries: Number of verification retry attempts (if verify=True)
+            upload_retries: Retry attempts for transient GCS upload failures (network
+                errors and 5xx responses). 4xx responses are not retried. Default: 5.
         """
         filepath = Path(filepath)
         if not filepath.exists():
@@ -596,18 +599,46 @@ class DegooClient:
         for kv in auth_data.get("AdditionalBody", []) or []:
             form_data[kv["Key"]] = kv["Value"]
 
-        if progress_callback:
-            pf: Any = _ProgressFile(filepath, size, progress_callback)
-        else:
-            pf = open(filepath, "rb")  # noqa: WPS515
-        try:
-            files = {"file": (filename, pf, content_type)}
-            upload_resp = httpx.post(base_url, data=form_data, files=files, timeout=600)
-        finally:
-            pf.close()
+        # Retry loop for transient GCS upload failures (network errors, 5xx).
+        # 4xx responses (policy violations, bad content type) are not retried.
+        last_exc: Exception = RuntimeError("upload_retries must be >= 0")
+        for attempt in range(max(1, upload_retries + 1)):
+            if attempt > 0:
+                backoff = min(2 ** (attempt - 1), 30)
+                time.sleep(backoff)
 
-        if upload_resp.status_code not in (200, 201, 204):
-            raise DegooAPIError(f"Upload to storage failed (HTTP {upload_resp.status_code}): {upload_resp.text}")
+            if progress_callback:
+                pf: Any = _ProgressFile(filepath, size, progress_callback)
+            else:
+                pf = open(filepath, "rb")  # noqa: WPS515
+            try:
+                files = {"file": (filename, pf, content_type)}
+                upload_resp = httpx.post(base_url, data=form_data, files=files, timeout=600)
+            except httpx.RequestError as exc:
+                pf.close()
+                last_exc = exc
+                continue  # network drop — retry
+            else:
+                pf.close()
+
+            if upload_resp.status_code in (200, 201, 204):
+                break  # success
+
+            if upload_resp.status_code >= 500:
+                last_exc = DegooAPIError(
+                    f"Upload to storage failed (HTTP {upload_resp.status_code}): {upload_resp.text}"
+                )
+                continue  # transient server error — retry
+
+            # 4xx: policy / auth problem — will not recover, raise immediately
+            raise DegooAPIError(
+                f"Upload to storage failed (HTTP {upload_resp.status_code}): {upload_resp.text}"
+            )
+        else:
+            # All attempts exhausted
+            raise DegooAPIError(
+                f"Upload to storage failed after {upload_retries} retries: {last_exc}"
+            ) from (last_exc if isinstance(last_exc, Exception) else None)
 
         # 3. Register the file in Degoo
         # CreationTime must be in milliseconds (JavaScript Date.now() convention).

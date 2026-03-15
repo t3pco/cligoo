@@ -40,7 +40,7 @@
 - [Configuration](#configuration)
   - [`cligoo config`](#cligoo-config)
   - [Storage locations](#storage-locations)
-  - [`config.json` schema](#configjson-schema)
+  - [`config.toml` schema](#configtoml-schema)
 - [Interactive Shell](#interactive-shell)
   - [`cligoo shell`](#cligoo-shell)
 - [Exit Codes](#exit-codes)
@@ -303,7 +303,7 @@ cligoo upload bigfile.iso -t /Web/Backups --workers 4
 | `--name NAME` | Override the remote filename — single file only |
 | `-r`, `--recursive` | Required when any source is a directory; walks the tree and uploads each file |
 | `--exclude PATTERN` | Exclude files matching a glob pattern (repeatable, e.g. `--exclude "*.tmp"`) |
-| `--workers N` | Number of concurrent upload threads for this invocation (overrides `config.json`) |
+| `--workers N` | Number of concurrent upload threads for this invocation (overrides `config.toml`) |
 
 #### Upload summary and exit codes
 
@@ -397,7 +397,7 @@ cligoo download /Web/BigFolder -t . -r --workers 8
 | `--name NAME` | Override the local filename — single file only |
 | `-r`, `--recursive` | Required when any item is a folder; walks the Degoo tree and downloads each file |
 | `--skip-existing` | Skip files whose local path already exists — useful to resume interrupted downloads |
-| `--workers N` | Number of concurrent download threads for this invocation (overrides `config.json`) |
+| `--workers N` | Number of concurrent download threads for this invocation (overrides `config.toml`) |
 
 #### Folder detection
 
@@ -626,7 +626,7 @@ The wizard covers two sections:
 2) Password  (degoo login — email + password)
 ```
 
-Sets `login_method` in `config.json`. Bare `cligoo login` uses this choice
+Sets `login_method` in `config.toml`. Bare `cligoo login` uses this choice
 automatically.
 
 #### 2. Chrome profile (shown when browser method is selected)
@@ -637,7 +637,7 @@ automatically.
 2)  Work     (user@company.com)
 ```
 
-Sets `chrome_profile` in `config.json`. When set, `cligoo login --browser`
+Sets `chrome_profile` in `config.toml`. When set, `cligoo login --browser`
 copies that profile's cookies into a temporary browser so existing Google and
 Degoo sessions carry over automatically.
 
@@ -645,29 +645,75 @@ Degoo sessions carry over automatically.
 
 | What | Where |
 | --- | --- |
-| User preferences | `~/.config/cligoo/config.json` |
+| User preferences | `~/.config/cligoo/config.toml` |
 | Auth tokens (primary) | macOS Keychain / GNOME Keyring / Windows Credential Manager |
 | Auth tokens (fallback) | `~/.config/cligoo/tokens.json` |
 | Credentials (fallback) | `~/.config/cligoo/credentials.json` |
 | Working directory | `~/.config/cligoo/cwd.json` |
 
-### `config.json` schema
+> **Legacy:** `config.json` (flat JSON) is still read as a fallback when `config.toml`
+> does not exist. Migrate by running `cligoo config` once — it writes a fresh
+> `config.toml` and the JSON file is then ignored.
 
-```json
-{
-  "login_method": "browser",
-  "chrome_profile": "Default",
-  "api_key": "da2-vs6twz5vnjdavpqndtbzg3prra",
-  "transfer_workers": 20
-}
+### `config.toml` schema
+
+```toml
+[api]
+graphql_url   = ""                            # GraphQL endpoint override (leave blank for default)
+api_key       = "da2-vs6twz5vnjdavpqndtbzg3prra"  # AppSync key override (env DEGOO_API_KEY takes precedence)
+timeout       = 60                            # HTTP timeout in seconds
+debug         = false                         # Verbose HTTP request/response logging
+
+[session]
+login_method       = "password"               # "password" | "browser"
+chrome_profile     = "Default"               # Chrome profile dir for --browser login
+transfer_workers   = 20                       # Concurrent upload/download threads
+auto_relogin       = true                     # Re-authenticate silently when token expires
+default_upload_dir = "/Web"                   # Default remote destination for uploads
+upload_retries     = 5                        # GCS upload retry attempts on transient errors
+
+[output]
+format       = "table"                        # "table" | "json"  (default output format)
+compact_json = false                          # true = single-line JSON; false = pretty-printed
+
+[advanced]
+standalone_nav = false                        # Allow cd/pwd outside the shell (disabled by default)
 ```
 
-| Key | Values | Meaning |
+#### Key reference
+
+**`[api]` section**
+
+| Key | Default | Meaning |
 | --- | --- | --- |
-| `login_method` | `"browser"` \| `"password"` \| `null` | Method used by bare `cligoo login`. `null` = prompt each time |
-| `chrome_profile` | `"Default"` \| `"Profile 1"` \| … \| `null` | Chrome profile to seed for `--browser` login. `null` = fresh temporary profile |
-| `api_key` | `"da2-…"` \| `null` | AWS AppSync client key override. Only needed if Degoo rotates the key. The `DEGOO_API_KEY` environment variable takes precedence |
-| `transfer_workers` | integer ≥ 1 (default `20`) | Concurrent threads used for parallel upload/download. Override per-command with `--workers N` |
+| `graphql_url` | *(built-in)* | Override the GraphQL endpoint |
+| `api_key` | *(built-in)* | AppSync client key override. `DEGOO_API_KEY` env var takes precedence |
+| `timeout` | `60` | HTTP timeout in seconds for all API requests |
+| `debug` | `false` | Log every request URL and response status to stderr |
+
+**`[session]` section**
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `login_method` | `null` | `"password"` or `"browser"`. `null` = prompt on each `cligoo login` |
+| `chrome_profile` | `null` | Chrome profile dir name for `--browser` login. `null` = fresh temporary profile |
+| `transfer_workers` | `20` | Concurrent threads for parallel upload/download. Override per-command with `--workers N` |
+| `auto_relogin` | `true` | Silently re-authenticate using saved credentials when the access token expires |
+| `default_upload_dir` | `"/Web"` | Default remote destination when `--dest` is omitted from `cligoo upload` |
+| `upload_retries` | `5` | Retry attempts for failed GCS uploads (network errors and 5xx). Set `0` to disable. Exponential backoff: 1 s, 2 s, 4 s … max 30 s |
+
+**`[output]` section**
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `format` | `"table"` | `"table"` or `"json"` — permanent default output format for all commands |
+| `compact_json` | `false` | `true` = single-line JSON; `false` = pretty-printed with indentation |
+
+**`[advanced]` section**
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `standalone_nav` | `false` | Enable `cligoo cd` and `cligoo pwd` as standalone commands (outside the shell). Off by default — use `cligoo shell` instead |
 
 #### Overriding the API key
 
@@ -676,13 +722,13 @@ browser's network inspector when visiting `app.degoo.com` — it is **not** a
 secret. If Degoo rotates it you can update without reinstalling:
 
 ```bash
-# Option A — environment variable (takes highest priority)
+# Option A — environment variable (takes highest priority, no file edit needed)
 export DEGOO_API_KEY=da2-newkeyhere
 
-# Option B — config file (persists across shells)
-echo '{"api_key": "da2-newkeyhere"}' | jq -s '.[0] * .[1]' \
-  ~/.config/cligoo/config.json - > /tmp/cfg.json \
-  && mv /tmp/cfg.json ~/.config/cligoo/config.json
+# Option B — config.toml (persists across shells)
+# Edit ~/.config/cligoo/config.toml and set:
+# [api]
+# api_key = "da2-newkeyhere"
 ```
 
 ---

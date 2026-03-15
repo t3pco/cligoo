@@ -316,3 +316,31 @@ def test_get_compact_json_true_from_toml(isolated_config, tmp_path):
     from cligoo.config import get_compact_json
 
     assert get_compact_json() is True
+
+
+
+def test_get_upload_retries_default(isolated_config):
+    from cligoo.config import get_upload_retries
+
+    assert get_upload_retries() == 5
+
+
+def test_get_upload_retries_custom_from_toml(isolated_config, tmp_path):
+    _write_toml(tmp_path / "config.toml", "[session]\nupload_retries = 10\n")
+    from cligoo.config import get_upload_retries
+
+    assert get_upload_retries() == 10
+
+
+def test_get_upload_retries_zero_allowed(isolated_config, tmp_path):
+    _write_toml(tmp_path / "config.toml", "[session]\nupload_retries = 0\n")
+    from cligoo.config import get_upload_retries
+
+    assert get_upload_retries() == 0
+
+
+def test_get_upload_retries_invalid_returns_default(isolated_config, tmp_path):
+    _write_toml(tmp_path / "config.toml", '[session]\nupload_retries = "bad"\n')
+    from cligoo.config import get_upload_retries
+
+    assert get_upload_retries() == 5

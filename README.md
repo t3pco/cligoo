@@ -124,7 +124,7 @@ cligoo ls          # lists /Web/Photos (cwd used automatically)
 ### Uploading files and folders
 
 Multiple files and directories can be transferred in a single command.
-Transfers run in parallel (default 20 workers, configurable via `transfer_workers` in `~/.config/cligoo/config.json`).
+Transfers run in parallel (default 20 workers, configurable via `transfer_workers` in `~/.config/cligoo/config.toml`).
 
 ```bash
 # Upload a single file to a specific folder
@@ -393,7 +393,7 @@ src/cligoo/
   auth.py        Authentication & token management
   chrome.py      Chrome installation & profile detection
   cli.py         Click CLI commands
-  config.py      Read/write ~/.config/cligoo/config.json
+  config.py      Read/write ~/.config/cligoo/config.toml
   constants.py   Endpoints, categories, config paths
   queries.py     GraphQL query/mutation strings
   shell.py       Interactive Degoo shell REPL
