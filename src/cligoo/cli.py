@@ -801,10 +801,54 @@ def _build_tree(
 
 
 # ── Info ──────────────────────────────────────────────────────────────────────
+
+def _compute_folder_size(client: "DegooClient", folder_id: str) -> tuple[int, int, int]:
+    """Recursively walk *folder_id* and return ``(total_bytes, file_count, folder_count)``.
+
+    Uses BFS with a visited set to guard against API cycles.
+    """
+    total_bytes = 0
+    file_count = 0
+    folder_count = 0
+    visited: set[str] = {folder_id}
+    queue = [folder_id]
+    while queue:
+        current_id = queue.pop()
+        try:
+            children = client.list_dir(current_id, limit=None)
+        except DegooAPIError:
+            continue
+        for child in children:
+            child_id = child.get("ID", "")
+            if child.get("Category", 0) in FOLDER_CATEGORIES:
+                folder_count += 1
+                if child_id and child_id not in visited:
+                    visited.add(child_id)
+                    queue.append(child_id)
+            else:
+                file_count += 1
+                try:
+                    total_bytes += int(child.get("Size") or 0)
+                except (ValueError, TypeError):
+                    pass
+    return total_bytes, file_count, folder_count
+
+
 @main.command()
 @click.argument("item_path")
-def info(item_path: str):
-    """Show detailed metadata for an item (path or numeric ID)."""
+@click.option(
+    "--no-size",
+    is_flag=True,
+    default=False,
+    help="Skip recursive content-size calculation for folders (fast for large trees).",
+)
+def info(item_path: str, no_size: bool):
+    """Show detailed metadata for an item (path or numeric ID).
+
+    \b
+    For folders the total content size is calculated by walking the full tree.
+    Use --no-size to skip this for very large folders.
+    """
     client = _client()
     try:
         _item_id, item = _resolve_item(client, item_path)
@@ -813,13 +857,30 @@ def info(item_path: str):
     except DegooAPIError as e:
         _err(e)
         raise SystemExit(1)
-    _print_item_detail(item)
+
+    # For folders compute recursive content stats unless the user opts out.
+    folder_stats: Optional[tuple[int, int, int]] = None
+    if item.get("Category", 0) in FOLDER_CATEGORIES and not no_size:
+        with console.status("[dim]Calculating folder size…[/dim]", spinner="dots"):
+            try:
+                folder_stats = _compute_folder_size(client, item["ID"])
+            except Exception:
+                folder_stats = None
+
+    _print_item_detail(item, folder_stats=folder_stats, size_skipped=no_size)
 
 
-def _print_item_detail(item: dict):
+def _print_item_detail(
+    item: dict,
+    *,
+    folder_stats: Optional[tuple[int, int, int]] = None,
+    size_skipped: bool = False,
+):
     table = Table(title=item.get("Name", "Item"), box=box.ROUNDED)
     table.add_column("Field", style="cyan")
     table.add_column("Value")
+
+    is_folder = item.get("Category", 0) in FOLDER_CATEGORIES
 
     fields = [
         ("ID", "ID"),
@@ -842,7 +903,8 @@ def _print_item_detail(item: dict):
                 cat = item.get("Category", 0)
                 table.add_row(label, f"{_category_icon(cat)} {CATEGORY_NAMES.get(cat, str(cat))}")
             elif label == "Size":
-                table.add_row(label, _humanize_size(item.get("Size")))
+                if not is_folder:
+                    table.add_row(label, _humanize_size(item.get("Size")))
         else:
             val = item.get(key)
             if val is not None:
@@ -850,6 +912,18 @@ def _print_item_detail(item: dict):
                     table.add_row(label, _format_time(val))
                 else:
                     table.add_row(label, str(val))
+
+    # Folder-specific content stats
+    if is_folder:
+        if size_skipped:
+            table.add_row("Content Size", "[dim]skipped (--no-size)[/dim]")
+        elif folder_stats is not None:
+            total_bytes, file_count, folder_count = folder_stats
+            table.add_row("Content Size", _humanize_size(total_bytes))
+            table.add_row("Files", str(file_count))
+            table.add_row("Sub-folders", str(folder_count))
+        else:
+            table.add_row("Content Size", "[dim]unavailable[/dim]")
 
     console.print(table)
 
@@ -1167,7 +1241,7 @@ def _collect_upload_tasks(
 
 @main.command()
 @click.argument("files", nargs=-1, required=True)
-@click.option("--dest", "-t", default=None, help="Remote destination folder (default: default_upload_dir from config, or /Web)")
+@click.option("--dest", "-t", default=None, help="Remote destination folder (default: default_upload_dir or /Web).")
 @click.option("--name", help="Override the uploaded filename (single file only)")
 @click.option("-r", "--recursive", is_flag=True, help="Upload directories recursively")
 @click.option(

@@ -472,6 +472,63 @@ def test_info_with_path():
     mock.get_item.assert_not_called()
 
 
+def test_info_folder_shows_content_size():
+    """info on a folder should walk children and report total content size."""
+    mock = _mock_client()
+    folder = {
+        "ID": "200",
+        "Name": "Photos",
+        "Category": 2,  # CATEGORY_FOLDER
+        "Size": "0",
+        "ParentID": "111",
+        "LastModificationTime": "1700000000",
+        "CreationTime": "1700000000",
+        "FilePath": "/Web/Photos",
+        "IsInRecycleBin": False,
+        "Description": "",
+        "URL": "",
+        "ThumbnailURL": "",
+    }
+    file_a = {"ID": "201", "Name": "a.jpg", "Category": 6, "Size": "1000000", "URL": "https://x"}
+    file_b = {"ID": "202", "Name": "b.jpg", "Category": 6, "Size": "2000000", "URL": "https://x"}
+    mock.get_item.return_value = folder
+    mock.is_folder.side_effect = lambda item: item.get("Category", 0) in {1, 2, 3}
+    mock.list_dir.side_effect = lambda fid, **_: [file_a, file_b] if fid == "200" else []
+    with _patch_client(mock):
+        result = _runner().invoke(main, ["info", "200"])
+    assert result.exit_code == 0, result.output
+    assert "Content Size" in result.output
+    assert "Files" in result.output
+    # 2 files reported
+    assert "2" in result.output
+
+
+def test_info_folder_no_size_flag():
+    """--no-size should skip content size calculation and report 'skipped'."""
+    mock = _mock_client()
+    folder = {
+        "ID": "200",
+        "Name": "Photos",
+        "Category": 2,
+        "Size": "0",
+        "ParentID": "111",
+        "LastModificationTime": "1700000000",
+        "CreationTime": "1700000000",
+        "FilePath": "/Web/Photos",
+        "IsInRecycleBin": False,
+        "Description": "",
+        "URL": "",
+        "ThumbnailURL": "",
+    }
+    mock.get_item.return_value = folder
+    mock.is_folder.side_effect = lambda item: item.get("Category", 0) in {1, 2, 3}
+    with _patch_client(mock):
+        result = _runner().invoke(main, ["info", "--no-size", "200"])
+    assert result.exit_code == 0, result.output
+    assert "skipped" in result.output
+    mock.list_dir.assert_not_called()
+
+
 # ── search ────────────────────────────────────────────────────────────────────
 
 
