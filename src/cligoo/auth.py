@@ -90,7 +90,7 @@ class TokenStore:
                                 self._kr.delete_password(legacy, key)
                             except Exception:
                                 pass
-                        return tok, ref
+                        return tok, ref or ""
                 except Exception:
                     pass
         if TOKEN_FILE.exists():
@@ -152,7 +152,7 @@ class TokenStore:
                             f"⚠  Migrated credentials from '{legacy}' keyring entry to 'cligoo'.",
                             file=sys.stderr,
                         )
-                        return email, pw
+                        return email, pw or ""
                 except Exception:
                     pass
         if CRED_FILE.exists():
@@ -229,7 +229,8 @@ def _check_login_backoff() -> Optional[float]:
             return remaining
         _LOGIN_BACKOFF_FILE.unlink(missing_ok=True)
     except Exception:
-        pass
+        # Corrupted or unreadable file — delete it so the guard is not permanently bypassed
+        _LOGIN_BACKOFF_FILE.unlink(missing_ok=True)
     return None
 
 
@@ -304,6 +305,10 @@ def login(email: str, password: str, *, save: bool = True) -> str:
     )
     if resp.status_code == 429:
         _set_login_backoff()
+        raise AuthError(
+            f"Login rate-limited — please wait {_LOGIN_BACKOFF_SECONDS // 60}m before trying again.\n"
+            "  (Degoo limits how often you can log in with email/password.)"
+        )
     if resp.status_code != 200:
         raise AuthError(f"Login failed (HTTP {resp.status_code}): {_api_error_message(resp)}")
 
@@ -316,10 +321,12 @@ def login(email: str, password: str, *, save: bool = True) -> str:
 
     access_token = _exchange_refresh_token(refresh_token)
 
+    # Clear backoff regardless of save= — a successful login proves we're not rate-limited
+    _clear_login_backoff()
+
     if save:
         _store.save(access_token, refresh_token)
         _store.save_credentials(email, password)
-        _clear_login_backoff()
 
     return access_token
 

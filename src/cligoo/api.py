@@ -607,19 +607,20 @@ class DegooClient:
                 backoff = min(2 ** (attempt - 1), 30)
                 time.sleep(backoff)
 
-            if progress_callback:
-                pf: Any = _ProgressFile(filepath, size, progress_callback)
-            else:
-                pf = open(filepath, "rb")  # noqa: WPS515
+            pf: Any = None
             try:
+                if progress_callback:
+                    pf = _ProgressFile(filepath, size, progress_callback)
+                else:
+                    pf = open(filepath, "rb")  # noqa: WPS515
                 files = {"file": (filename, pf, content_type)}
                 upload_resp = httpx.post(base_url, data=form_data, files=files, timeout=600)
             except httpx.RequestError as exc:
-                pf.close()
                 last_exc = exc
                 continue  # network drop — retry
-            else:
-                pf.close()
+            finally:
+                if pf is not None:
+                    pf.close()
 
             if upload_resp.status_code in (200, 201, 204):
                 break  # success
@@ -631,14 +632,12 @@ class DegooClient:
                 continue  # transient server error — retry
 
             # 4xx: policy / auth problem — will not recover, raise immediately
-            raise DegooAPIError(
-                f"Upload to storage failed (HTTP {upload_resp.status_code}): {upload_resp.text}"
-            )
+            raise DegooAPIError(f"Upload to storage failed (HTTP {upload_resp.status_code}): {upload_resp.text}")
         else:
             # All attempts exhausted
-            raise DegooAPIError(
-                f"Upload to storage failed after {upload_retries} retries: {last_exc}"
-            ) from (last_exc if isinstance(last_exc, Exception) else None)
+            raise DegooAPIError(f"Upload to storage failed after {upload_retries} retries: {last_exc}") from (
+                last_exc if isinstance(last_exc, Exception) else None
+            )
 
         # 3. Register the file in Degoo
         # CreationTime must be in milliseconds (JavaScript Date.now() convention).

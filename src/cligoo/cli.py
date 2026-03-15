@@ -360,6 +360,7 @@ def login(email: Optional[str], password: Optional[str], browser: bool):
             email = saved_email
             password = saved_password
             console.print(f"  Signing in as [bold]{email}[/bold] using stored credentials…")
+            console.print("  [dim]Pass --email to sign in with a different account.[/dim]")
         else:
             # Partially missing — prompt for what we need
             email = click.prompt("Email", default=saved_email) if saved_email else click.prompt("Email")
@@ -578,8 +579,8 @@ def whoami(output_format: Optional[str]):
         _err(e)
         raise SystemExit(1)
 
-    used = int(info.get("UsedQuota", 0))
-    total = int(info.get("TotalQuota", 1))
+    used = int(info.get("UsedQuota") or 0)
+    total = int(info.get("TotalQuota") or 0)
     pct = (used / total * 100) if total else 0
 
     if _want_json(output_format):
@@ -593,7 +594,7 @@ def whoami(output_format: Optional[str]):
                     "total_bytes": total,
                     "free_bytes": max(0, total - used),
                     "usage_pct": round(pct, 2),
-                    "file_size_limit_bytes": int(info.get("FileSizeLimit") or 0),
+                    "file_size_limit_bytes": _safe_int(info.get("FileSizeLimit")),
                 }
             )
         )
@@ -624,8 +625,8 @@ def quota(output_format: Optional[str]):
     except DegooAPIError as e:
         _err(e)
         raise SystemExit(1)
-    used = int(info.get("UsedQuota", 0))
-    total = int(info.get("TotalQuota", 1))
+    used = int(info.get("UsedQuota") or 0)
+    total = int(info.get("TotalQuota") or 0)
     pct = (used / total * 100) if total else 0
 
     if _want_json(output_format):
@@ -634,7 +635,7 @@ def quota(output_format: Optional[str]):
                 {
                     "used_bytes": used,
                     "total_bytes": total,
-                    "free_bytes": total - used,
+                    "free_bytes": max(0, total - used),
                     "usage_pct": round(pct, 2),
                 }
             )
@@ -643,7 +644,7 @@ def quota(output_format: Optional[str]):
 
     console.print(f"  Used:  {_humanize_size(used)}")
     console.print(f"  Total: {_humanize_size(total)}")
-    console.print(f"  Free:  {_humanize_size(total - used)}")
+    console.print(f"  Free:  {_humanize_size(max(0, total - used))}")
     console.print(f"  Usage: {pct:.1f}%")
 
 
@@ -827,7 +828,18 @@ def ls(
     if _want_json(output_format):
         # flat JSON (no depth): use sorted items
         flat = [_item_json(it) for it in items]
-        console.print(_json_output({"path": display_path, "items": flat, "count": len(flat), "incomplete": False}))
+        console.print(
+            _json_output(
+                {
+                    "path": display_path,
+                    "items": flat,
+                    "count": len(flat),
+                    # Heuristic: if we got exactly `limit` items the listing
+                    # may be truncated (use --limit N to raise the cap).
+                    "incomplete": len(items) >= limit,
+                }
+            )
+        )
         return
 
     console.print(f"[dim]{display_path}[/dim]")
@@ -991,10 +1003,7 @@ def _compute_folder_size(client: "DegooClient", folder_id: str) -> tuple[int, in
                         queue.append(child_id)
                 else:
                     file_count += 1
-                    try:
-                        total_bytes += int(child.get("Size") or 0)
-                    except (ValueError, TypeError):
-                        pass
+                    total_bytes += _safe_int(child.get("Size"))
         except DegooAPIError:
             has_errors = True
             continue
@@ -2142,7 +2151,7 @@ def shared(limit: int, long: bool, output_format: Optional[str]):
                     entry["shared_with"] = None  # API error — permissions unavailable
                     entry["shared_with_error"] = True
             result_items.append(entry)
-        console.print(_json_output(result_items))
+        console.print(_json_output({"items": result_items, "count": len(result_items)}))
         return
 
     table = Table(title="Shared Items", box=box.SIMPLE_HEAVY)

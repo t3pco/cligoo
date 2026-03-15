@@ -233,7 +233,24 @@ def test_quota_api_error():
     mock.get_user_info.side_effect = DegooAPIError("quota error")
     with _patch_client(mock):
         result = _runner().invoke(main, ["quota"])
-    assert result.exit_code != 0  # ── pwd / cd ──────────────────────────────────────────────────────────────────
+    assert result.exit_code != 0
+
+
+def test_quota_json_free_bytes_never_negative():
+    """quota --output json free_bytes must be >= 0 when TotalQuota is absent/zero."""
+    mock = _mock_client()
+    # TotalQuota absent → defaults to 1; UsedQuota large → would be negative without guard
+    mock.get_user_info.return_value = {"UsedQuota": 999_000_000_000, "TotalQuota": 0}
+    with _patch_client(mock):
+        result = _runner().invoke(main, ["quota", "--output", "json"])
+    assert result.exit_code == 0, result.output
+    import json
+
+    data = json.loads(result.output)
+    assert data["free_bytes"] >= 0, f"free_bytes was negative: {data['free_bytes']}"
+
+
+# ── pwd / cd ──────────────────────────────────────────────────────────────────
 
 
 def test_pwd_disabled_by_default():
@@ -573,6 +590,37 @@ def test_info_folder_no_size_flag():
     assert result.exit_code == 0, result.output
     assert "skipped" in result.output
     mock.iter_dir.assert_not_called()
+
+
+def test_info_folder_size_tolerates_float_string_sizes():
+    """_compute_folder_size must count files whose Size is a float-string like '1048576.0'."""
+    mock = _mock_client()
+    folder = {
+        "ID": "300",
+        "Name": "Floats",
+        "Category": 2,
+        "Size": "0",
+        "ParentID": "0",
+        "LastModificationTime": "0",
+        "CreationTime": "0",
+        "FilePath": "/Floats",
+        "IsInRecycleBin": False,
+        "Description": "",
+        "URL": "",
+        "ThumbnailURL": "",
+    }
+    children = [
+        {"ID": "301", "Name": "a.mp4", "Category": 8, "Size": "1048576.0", "URL": "http://x"},
+        {"ID": "302", "Name": "b.mp4", "Category": 8, "Size": "2097152.0", "URL": "http://y"},
+    ]
+    mock.get_item.return_value = folder
+    mock.is_folder.side_effect = lambda item: item.get("Category", 0) in {1, 2, 3}
+    mock.iter_dir.return_value = iter(children)
+    with _patch_client(mock):
+        result = _runner().invoke(main, ["info", "300"])
+    assert result.exit_code == 0, result.output
+    # 1 048 576 + 2 097 152 = 3 145 728 bytes = 3.0 MiB — must appear in output
+    assert "3.0" in result.output or "3 MB" in result.output or "3145728" in result.output, result.output
 
 
 def test_info_folder_incomplete_on_api_error():

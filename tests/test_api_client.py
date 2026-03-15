@@ -15,7 +15,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock, call, patch
 
 import httpx
-import pytest
 
 from cligoo.api import DegooAPIError, DegooClient
 from cligoo.constants import DEFAULT_HEADERS

@@ -318,7 +318,6 @@ def test_get_compact_json_true_from_toml(isolated_config, tmp_path):
     assert get_compact_json() is True
 
 
-
 def test_get_upload_retries_default(isolated_config):
     from cligoo.config import get_upload_retries
 
