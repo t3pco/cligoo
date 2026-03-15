@@ -24,6 +24,9 @@ TOKEN_FILE = CONFIG_DIR / "tokens.json"
 CRED_FILE = CONFIG_DIR / "credentials.json"
 
 SERVICE_NAME = "cligoo"
+# Legacy service names from previous versions of the tool.
+# load() / load_credentials() will migrate entries from these to SERVICE_NAME.
+_LEGACY_SERVICE_NAMES = ["degoo-cli", "degoo"]
 
 
 class AuthError(Exception):
@@ -75,6 +78,21 @@ class TokenStore:
                     return tok, ref
             except Exception:
                 pass
+            # One-time migration from legacy keyring service names
+            for legacy in _LEGACY_SERVICE_NAMES:
+                try:
+                    tok = self._kr.get_password(legacy, "token")
+                    ref = self._kr.get_password(legacy, "refresh_token")
+                    if tok:
+                        self.save(tok, ref or "")
+                        for key in ("token", "refresh_token"):
+                            try:
+                                self._kr.delete_password(legacy, key)
+                            except Exception:
+                                pass
+                        return tok, ref
+                except Exception:
+                    pass
         if TOKEN_FILE.exists():
             data = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
             return data.get("token"), data.get("refresh_token")
@@ -118,6 +136,25 @@ class TokenStore:
                     return email, pw
             except Exception:
                 pass
+            # One-time migration from legacy keyring service names
+            for legacy in _LEGACY_SERVICE_NAMES:
+                try:
+                    email = self._kr.get_password(legacy, "email")
+                    pw = self._kr.get_password(legacy, "password")
+                    if email:
+                        self.save_credentials(email, pw or "")
+                        for key in ("email", "password"):
+                            try:
+                                self._kr.delete_password(legacy, key)
+                            except Exception:
+                                pass
+                        print(
+                            f"⚠  Migrated credentials from '{legacy}' keyring entry to 'cligoo'.",
+                            file=sys.stderr,
+                        )
+                        return email, pw
+                except Exception:
+                    pass
         if CRED_FILE.exists():
             data = json.loads(CRED_FILE.read_text(encoding="utf-8"))
             return data.get("email"), data.get("password")
@@ -178,7 +215,7 @@ _store = TokenStore()
 
 # ── Login rate-limit backoff ───────────────────────────────────────────────────
 _LOGIN_BACKOFF_FILE = CONFIG_DIR / ".login_backoff"
-_LOGIN_BACKOFF_SECONDS = 300  # 5 minutes
+_LOGIN_BACKOFF_SECONDS = 900  # 15 minutes — matches Degoo's observed rate-limit window
 
 
 def _check_login_backoff() -> Optional[float]:
