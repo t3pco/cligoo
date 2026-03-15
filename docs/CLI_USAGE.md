@@ -44,6 +44,7 @@
 - [Interactive Shell](#interactive-shell)
   - [`cligoo shell`](#cligoo-shell)
 - [Exit Codes](#exit-codes)
+- [JSON Output](#json-output)
 - [Global Options](#global-options)
 
 ---
@@ -124,6 +125,7 @@ Shows name, email, account type, storage usage, and per-file size limit.
 
 ```bash
 cligoo whoami
+cligoo whoami --output json
 ```
 
 ### `cligoo quota`
@@ -132,6 +134,7 @@ Compact storage summary: used, total, free, and usage percentage.
 
 ```bash
 cligoo quota
+cligoo quota --output json
 ```
 
 ---
@@ -159,6 +162,7 @@ cligoo ls -d 3 /Web
 | `-R`, `--recursive` | List all levels (equivalent to `-d 99`) |
 | `-d N`, `--depth N` | Show subtree up to N levels deep |
 | `-n N`, `--limit N` | Max items per directory (default 100) |
+| `-o`, `--output` | Output format: `table` (default) or `json` |
 
 ### `cligoo ll [PATH]`
 
@@ -178,6 +182,7 @@ cligoo tree /Web/Photos -n 50
 | --- | --- |
 | `-d N`, `--depth N` | Max depth (default 2) |
 | `-n N`, `--limit N` | Max items per directory (default 200) |
+| `-o`, `--output` | Output format: `table` (default) or `json` (flat list with full paths) |
 
 ### `cligoo info <PATH|ID>`
 
@@ -204,6 +209,14 @@ run `cligoo info holiday.jpg` without typing the full path.
 The **ID** field in the output can be used with any command that accepts a
 numeric ID (e.g. `cligoo download 123456789 .`).
 
+For folders, `info` walks the full tree to report total **Content Size**, **Files**, and **Sub-folders**.
+Pass `--no-size` to skip the walk for very large trees.
+
+| Flag | Description |
+| --- | --- |
+| `--no-size` | Skip recursive content-size calculation (fast for large folders) |
+| `-o`, `--output` | Output format: `table` (default) or `json` |
+
 ### `cligoo search <TERM>`
 
 Search for items by name across the whole account.
@@ -211,11 +224,13 @@ Search for items by name across the whole account.
 ```bash
 cligoo search "vacation photos"
 cligoo search "report.pdf" -n 10
+cligoo search GoPro --output json
 ```
 
 | Flag | Description |
 | --- | --- |
 | `-n N`, `--limit N` | Maximum results to return |
+| `-o`, `--output` | Output format: `table` (default) or `json` |
 
 ### `cligoo cd [PATH]`
 
@@ -835,6 +850,95 @@ $ cligoo shell
 
 For `upload` and `download`, skipped files (duplicates or unsupported types) do **not** cause a
 non-zero exit code.  Only unrecoverable errors do.
+
+---
+
+## JSON Output
+
+Every command that returns structured data accepts `--output json` (short: `-o json`).
+The default format (`table`) can be permanently changed in `config.toml`:
+
+```toml
+[output]
+format = "json"        # "table" or "json"
+compact_json = false   # true = single-line output
+```
+
+### Commands with JSON support
+
+| Command | JSON shape |
+| --- | --- |
+| `whoami` | `{name, email, account_type, used_bytes, total_bytes, free_bytes, usage_pct, file_size_limit_bytes}` |
+| `quota` | `{used_bytes, total_bytes, free_bytes, usage_pct}` |
+| `ls` | `{path, items: [...], count}` |
+| `tree` | `{root, items: [...], count}` — flat list with full paths |
+| `info` | item object + optional `folder_stats: {total_bytes, files, subfolders, incomplete}` |
+| `search` | `{term, items: [...], count}` |
+| `trash` | `{items: [...], count, total_bytes}` |
+| `shared` | `{items: [...], count}` |
+| `feed` | `{items: [...], count}` |
+| `mkdir` | `{ok, name, path}` |
+| `upload` | `{uploaded, skipped, failed, errors: [...]}` |
+| `download` | `{downloaded, failed, errors: [...]}` |
+| `mv` | `{ok, src, dest}` |
+| `cp` | `{ok, src, dest}` |
+| `rename` | `{ok, src, new_name}` |
+| `rm` | `{ok, deleted: [...], permanent}` |
+| `share` | `{ok, item_id}` |
+| `unshare` | `{ok, item_id}` |
+
+### Item object schema
+
+All list commands (`ls`, `tree`, `search`, `trash`, `shared`, `feed`) return items
+with a consistent structure:
+
+```json
+{
+  "id": "123456789",
+  "name": "holiday.mp4",
+  "category": 6,
+  "category_name": "Video",
+  "is_folder": false,
+  "size_bytes": 45678901,
+  "parent_id": "987654321",
+  "path": "/Web/GoPro/holiday.mp4",
+  "created": "1700000000",
+  "modified": "1700000000",
+  "uploaded": "1700000000",
+  "url": "https://c.degoo.media/...",
+  "thumbnail_url": null,
+  "in_recycle_bin": false
+}
+```
+
+### Agent usage examples
+
+```bash
+# List a folder and pipe to jq
+cligoo ls /Web/GoPro --output json | jq '.items[] | select(.is_folder == false) | .name'
+
+# Get the ID of a file by name
+cligoo search "report.pdf" --output json | jq -r '.items[0].id'
+
+# Check quota programmatically
+cligoo quota --output json | jq '{used: .used_bytes, free: .free_bytes}'
+
+# Recursive tree as a flat JSON list
+cligoo tree /Web --depth 3 --output json | jq '.items[] | select(.is_folder == false) | .path'
+
+# Upload and capture result
+result=$(cligoo upload file.pdf --output json)
+echo $result | jq '.uploaded'
+
+# Get folder size
+cligoo info /Web/GoPro --output json | jq '.folder_stats.total_bytes'
+```
+
+### Error handling in JSON mode
+
+Errors (API failures, path not found, auth errors) are always written to **stderr** as
+plain text regardless of `--output json`. The exit code is still non-zero on failure.
+This means stdout remains clean JSON for piping, while stderr carries diagnostics.
 
 ---
 

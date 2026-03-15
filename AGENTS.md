@@ -248,6 +248,9 @@ markdownlint <changed-file.md>
 
 Fix all errors before moving on. **Do not skip any step.**
 
+> **Commit rule:** Never create a git commit unless the user explicitly asks for one.
+> Complete all code changes, tests, and lint passes first; only commit when instructed.
+
 Integration tests (live API, require Degoo credentials):
 
 ```bash
