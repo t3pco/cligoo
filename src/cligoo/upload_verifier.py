@@ -18,8 +18,7 @@ class UploadVerificationError(Exception):
         self.attempts = attempts
         self.reason = reason
         super().__init__(
-            f"Upload verification failed for '{filename}' "
-            f"(File ID: {file_id}) after {attempts} attempt(s): {reason}"
+            f"Upload verification failed for '{filename}' (File ID: {file_id}) after {attempts} attempt(s): {reason}"
         )
 
 
@@ -76,16 +75,13 @@ class UploadVerifier:
 
                 if verbose:
                     print(
-                        f"   [dim]Attempt {attempt + 1}/{self.max_retries}: "
-                        f"Size={actual_size}, HasURL={has_url}[/dim]"
+                        f"   [dim]Attempt {attempt + 1}/{self.max_retries}: Size={actual_size}, HasURL={has_url}[/dim]"
                     )
 
                 # Success: file is accessible
                 if has_url and actual_size > 0:
                     if verbose and attempt > 0:
-                        print(
-                            f"   [green]✓ Upload verified after {attempt + 1} attempt(s)[/green]"
-                        )
+                        print(f"   [green]✓ Upload verified after {attempt + 1} attempt(s)[/green]")
                     return item
 
                 # Size is 0 and no URL - GCS linkage issue

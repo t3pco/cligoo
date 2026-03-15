@@ -35,23 +35,23 @@ from pathlib import Path
 from typing import Any, Optional
 
 CONFIG_DIR = Path.home() / ".config" / "cligoo"
-TOML_FILE = CONFIG_DIR / "config.toml"   # primary — read + write
+TOML_FILE = CONFIG_DIR / "config.toml"  # primary — read + write
 CONFIG_FILE = CONFIG_DIR / "config.json"  # legacy — read-only fallback
 
 # ── flat key → (toml_section, toml_key) ──────────────────────────────────────
 _FLAT_TO_TOML: dict[str, tuple[str, str]] = {
-    "login_method":     ("session", "login_method"),
-    "chrome_profile":   ("session", "chrome_profile"),
-    "api_key":          ("api",     "api_key"),
+    "login_method": ("session", "login_method"),
+    "chrome_profile": ("session", "chrome_profile"),
+    "api_key": ("api", "api_key"),
     "transfer_workers": ("session", "transfer_workers"),
-    "graphql_url":      ("api",     "graphql_url"),
-    "timeout":          ("api",     "timeout"),
-    "debug":            ("api",     "debug"),
-    "auto_relogin":       ("session", "auto_relogin"),
+    "graphql_url": ("api", "graphql_url"),
+    "timeout": ("api", "timeout"),
+    "debug": ("api", "debug"),
+    "auto_relogin": ("session", "auto_relogin"),
     "default_upload_dir": ("session", "default_upload_dir"),
-    "output_format":      ("output",  "format"),
-    "compact_json":       ("output",   "compact_json"),
-    "standalone_nav":     ("advanced", "standalone_nav"),
+    "output_format": ("output", "format"),
+    "compact_json": ("output", "compact_json"),
+    "standalone_nav": ("advanced", "standalone_nav"),
 }
 
 
@@ -59,10 +59,12 @@ def _toml_lib():
     """Return the tomllib/tomli module, or None if unavailable."""
     try:
         import tomllib  # Python 3.11+
+
         return tomllib
     except ImportError:
         try:
             import tomli as tomllib  # type: ignore[no-redef]
+
             return tomllib
         except ImportError:
             return None
@@ -91,6 +93,7 @@ def _load_structured() -> dict[str, Any]:
     if CONFIG_FILE.exists():
         try:
             import json
+
             flat = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             return _flat_to_structured(flat)
         except Exception:
@@ -131,10 +134,7 @@ def save_config(updates: dict[str, Any]) -> None:
     try:
         import tomli_w
     except ImportError:
-        raise RuntimeError(
-            "The 'tomli-w' package is required to save configuration.\n"
-            "  pip install tomli-w"
-        )
+        raise RuntimeError("The 'tomli-w' package is required to save configuration.\n  pip install tomli-w")
 
     current = _load_structured()
 

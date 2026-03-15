@@ -176,6 +176,42 @@ def _write_private(path: Path, content: str) -> None:
 
 _store = TokenStore()
 
+# ── Login rate-limit backoff ───────────────────────────────────────────────────
+_LOGIN_BACKOFF_FILE = CONFIG_DIR / ".login_backoff"
+_LOGIN_BACKOFF_SECONDS = 300  # 5 minutes
+
+
+def _check_login_backoff() -> Optional[float]:
+    """Return remaining backoff seconds if a recent 429 was recorded, else None."""
+    if not _LOGIN_BACKOFF_FILE.exists():
+        return None
+    try:
+        ts = float(_LOGIN_BACKOFF_FILE.read_text(encoding="utf-8").strip())
+        remaining = ts + _LOGIN_BACKOFF_SECONDS - time.time()
+        if remaining > 0:
+            return remaining
+        _LOGIN_BACKOFF_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+    return None
+
+
+def _set_login_backoff() -> None:
+    """Record that a 429 was received so subsequent attempts back off."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        _LOGIN_BACKOFF_FILE.write_text(str(time.time()), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _clear_login_backoff() -> None:
+    """Remove the backoff file after a successful login."""
+    try:
+        _LOGIN_BACKOFF_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
 
 def _token_expired(token: str, margin: int = 60) -> bool:
     """Return True if a JWT is expired (or will be within *margin* seconds).
@@ -214,11 +250,23 @@ def login(email: str, password: str, *, save: bool = True) -> str:
 
     The refresh token is persisted so future calls can use ``get_token()``.
     """
+    remaining = _check_login_backoff()
+    if remaining is not None:
+        mins = int(remaining // 60)
+        secs = int(remaining % 60)
+        wait = f"{mins}m {secs}s" if mins else f"{secs}s"
+        raise AuthError(
+            f"Login rate-limited — please wait {wait} before trying again.\n"
+            "  (Degoo limits how often you can log in with email/password.)"
+        )
+
     resp = httpx.post(
         LOGIN_URL,
         json={"GenerateToken": True, "Username": email, "Password": password},
         timeout=30,
     )
+    if resp.status_code == 429:
+        _set_login_backoff()
     if resp.status_code != 200:
         raise AuthError(f"Login failed (HTTP {resp.status_code}): {_api_error_message(resp)}")
 
@@ -234,6 +282,7 @@ def login(email: str, password: str, *, save: bool = True) -> str:
     if save:
         _store.save(access_token, refresh_token)
         _store.save_credentials(email, password)
+        _clear_login_backoff()
 
     return access_token
 
@@ -452,10 +501,8 @@ def fetch_token_via_browser() -> tuple[str, str]:
                     # 2. localStorage — Degoo web app stores auth state here
                     if not refresh_token:
                         try:
-                            ls_entries = page.evaluate(
-                                "() => Object.entries(window.localStorage)"
-                            )
-                            for _key, val in (ls_entries or []):
+                            ls_entries = page.evaluate("() => Object.entries(window.localStorage)")
+                            for _key, val in ls_entries or []:
                                 if (
                                     isinstance(val, str)
                                     and val.startswith("ey")
@@ -471,11 +518,7 @@ def fetch_token_via_browser() -> tuple[str, str]:
                     if not refresh_token:
                         for cookie in page.context.cookies():
                             val = cookie.get("value", "")
-                            if (
-                                val.startswith("ey")
-                                and len(val) > 50
-                                and val != access_token
-                            ):
+                            if val.startswith("ey") and len(val) > 50 and val != access_token:
                                 refresh_token = val
                                 break
             finally:
@@ -520,6 +563,7 @@ def get_token() -> str:
 
     # 3) Try re-login with saved credentials (if auto_relogin is enabled)
     from .config import get_auto_relogin
+
     if get_auto_relogin():
         email, password = _store.load_credentials()
         if email and password:

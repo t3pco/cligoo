@@ -94,7 +94,7 @@ class DegooClient:
     ) -> None:
         from .config import get_api_debug, get_api_timeout, get_graphql_url
 
-        self._explicit_token = token   # None → use get_token() dynamically
+        self._explicit_token = token  # None → use get_token() dynamically
         self._token = token
         self._timeout = timeout if timeout is not None else get_api_timeout()
         self._graphql_url = graphql_url or get_graphql_url() or GRAPHQL_URL
@@ -476,8 +476,8 @@ class DegooClient:
         h.update(bytes(CHECKSUM_SEED))
         with open(filepath, "rb") as f:
             h.update(f.read(1024 * 1024))
-        proto = b'\x0a\x14' + h.digest() + b'\x10\x00'
-        return base64.urlsafe_b64encode(proto).decode().rstrip('=')
+        proto = b"\x0a\x14" + h.digest() + b"\x10\x00"
+        return base64.urlsafe_b64encode(proto).decode().rstrip("=")
 
     def _get_upload_auth(self, parent_id: str, filename: str, size: int, checksum: str) -> dict:
         """Get upload authorization (Google Cloud Storage credentials).
@@ -587,7 +587,7 @@ class DegooClient:
         form_data["signature"] = auth_data["Signature"]
         # GCS key format (required by the policy): {KeyPrefix}{ext}/{checksum}.{ext}
         # e.g. "ADfzPh/6tnxDg/pdf/ChQVgjMd4f9UAnRnJNB8-dCTOpsPLBAA.pdf"
-        ext = Path(filename).suffix.lstrip('.').lower() or "bin"
+        ext = Path(filename).suffix.lstrip(".").lower() or "bin"
         form_data["key"] = f"{key_prefix}{ext}/{checksum}.{ext}"
         form_data["Content-Type"] = content_type
         if auth_data.get("ACL"):
@@ -650,9 +650,7 @@ class DegooClient:
         if verify and file_id:
             from .upload_verifier import verify_and_retry
 
-            verify_and_retry(
-                self, file_id, filename, size, max_retries=max_retries, verbose=False
-            )
+            verify_and_retry(self, file_id, filename, size, max_retries=max_retries, verbose=False)
 
         return file_id or upload_result
 
@@ -772,9 +770,9 @@ class DegooClient:
             if item.get("Name") != name:
                 continue
             if self.is_folder(item):
-                return item          # real folder — best possible match
+                return item  # real folder — best possible match
             if best is None:
-                best = item          # keep first non-folder match as fallback
+                best = item  # keep first non-folder match as fallback
         return best
 
     @staticmethod

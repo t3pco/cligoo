@@ -242,9 +242,7 @@ class DegooShell(cmd.Cmd):
         for raw in raw_paths:
             if not any(c in raw for c in ("*", "?", "[")):
                 # Plain path — just resolve it
-                results.append(
-                    raw if raw.lstrip("-").isdigit() else self._resolve_degoo(raw)
-                )
+                results.append(raw if raw.lstrip("-").isdigit() else self._resolve_degoo(raw))
                 continue
             # Glob: split into parent + pattern
             if "/" in raw:
@@ -369,10 +367,7 @@ class DegooShell(cmd.Cmd):
                 return
         else:
             # Plain path(s) — resolve each relative to CWD
-            paths = [
-                self._resolve_degoo(t) if not t.lstrip("-").isdigit() else t
-                for t in path_tokens
-            ]
+            paths = [self._resolve_degoo(t) if not t.lstrip("-").isdigit() else t for t in path_tokens]
 
         for path in paths:
             self._run_degoo_cmd(["cligoo", "ls"] + opts + [path])
@@ -436,10 +431,7 @@ class DegooShell(cmd.Cmd):
                 print("  ✗ No matching items")
                 return
         else:
-            paths = [
-                self._resolve_degoo(t) if not t.lstrip("-").isdigit() else t
-                for t in path_tokens
-            ]
+            paths = [self._resolve_degoo(t) if not t.lstrip("-").isdigit() else t for t in path_tokens]
 
         for path in paths:
             self._run_degoo_cmd(["cligoo", "tree"] + opts + [path])
@@ -517,9 +509,7 @@ class DegooShell(cmd.Cmd):
         trailing = "/" if dest_raw.endswith("/") else ""
         src = self._resolve_degoo(src_raw) if not src_raw.lstrip("-").isdigit() else src_raw
         dest_base = dest_raw.rstrip("/")
-        dest = (
-            self._resolve_degoo(dest_base) if not dest_base.lstrip("-").isdigit() else dest_base
-        ) + trailing
+        dest = (self._resolve_degoo(dest_base) if not dest_base.lstrip("-").isdigit() else dest_base) + trailing
         self._run_degoo_cmd(["cligoo", "mv", src, dest], invalidate_cache=True)
 
     def complete_mv(self, text, line, begidx, endidx):  # noqa: ANN001,ANN201
@@ -563,9 +553,7 @@ class DegooShell(cmd.Cmd):
             print("  Usage: rename <path|id> <new_name>")
             return
         path_raw, new_name = tokens
-        resolved = (
-            self._resolve_degoo(path_raw) if not path_raw.lstrip("-").isdigit() else path_raw
-        )
+        resolved = self._resolve_degoo(path_raw) if not path_raw.lstrip("-").isdigit() else path_raw
         self._run_degoo_cmd(["cligoo", "rename", resolved, new_name], invalidate_cache=True)
 
     def complete_rename(self, text, line, begidx, endidx):  # noqa: ANN001,ANN201
@@ -831,7 +819,7 @@ class DegooShell(cmd.Cmd):
         """
         # Route hyphenated Degoo commands that cmd.Cmd can't dispatch natively
         if line.strip() == "empty-trash" or line.strip().startswith("empty-trash "):
-            rest = line.strip()[len("empty-trash"):].strip()
+            rest = line.strip()[len("empty-trash") :].strip()
             self.do_empty_trash(rest)
             return
 

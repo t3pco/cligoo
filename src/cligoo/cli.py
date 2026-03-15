@@ -75,7 +75,6 @@ def _save_cwd(path: str) -> None:
     _CWD_FILE.write_text(json.dumps({"path": path}))
 
 
-
 def _err(msg: object) -> None:
     """Print an error message, safely escaping Rich markup in the text."""
     err_console.print(f"[red]✗[/red] {_esc(str(msg))}")
@@ -110,7 +109,8 @@ def _item_json(item: dict) -> dict:
 
 
 _OUTPUT_OPTION = click.option(
-    "--output", "-o",
+    "--output",
+    "-o",
     "output_format",
     type=click.Choice(["table", "json"], case_sensitive=False),
     default=None,
@@ -147,9 +147,7 @@ def _collect_tree_flat(
         entry["path"] = child_path
         result.append(entry)
         if child.get("Category", 0) in FOLDER_CATEGORIES:
-            result.extend(
-                _collect_tree_flat(client, str(child["ID"]), child_path, max_depth, current_depth + 1, limit)
-            )
+            result.extend(_collect_tree_flat(client, str(child["ID"]), child_path, max_depth, current_depth + 1, limit))
     return result
 
 
@@ -554,16 +552,20 @@ def whoami(output_format: Optional[str]):
     pct = (used / total * 100) if total else 0
 
     if _want_json(output_format):
-        console.print(_json_output({
-            "name": f"{info.get('FirstName', '')} {info.get('LastName', '')}".strip(),
-            "email": info.get("Email"),
-            "account_type": info.get("AccountType"),
-            "used_bytes": int(info.get("UsedQuota", 0)),
-            "total_bytes": int(info.get("TotalQuota", 0)),
-            "free_bytes": int(info.get("TotalQuota", 0)) - int(info.get("UsedQuota", 0)),
-            "usage_pct": round(pct, 2),
-            "file_size_limit_bytes": int(info.get("FileSizeLimit") or 0),
-        }))
+        console.print(
+            _json_output(
+                {
+                    "name": f"{info.get('FirstName', '')} {info.get('LastName', '')}".strip(),
+                    "email": info.get("Email"),
+                    "account_type": info.get("AccountType"),
+                    "used_bytes": int(info.get("UsedQuota", 0)),
+                    "total_bytes": int(info.get("TotalQuota", 0)),
+                    "free_bytes": int(info.get("TotalQuota", 0)) - int(info.get("UsedQuota", 0)),
+                    "usage_pct": round(pct, 2),
+                    "file_size_limit_bytes": int(info.get("FileSizeLimit") or 0),
+                }
+            )
+        )
         return
 
     table = Table(title="Degoo Account", box=box.ROUNDED)
@@ -596,12 +598,16 @@ def quota(output_format: Optional[str]):
     pct = (used / total * 100) if total else 0
 
     if _want_json(output_format):
-        console.print(_json_output({
-            "used_bytes": used,
-            "total_bytes": total,
-            "free_bytes": total - used,
-            "usage_pct": round(pct, 2),
-        }))
+        console.print(
+            _json_output(
+                {
+                    "used_bytes": used,
+                    "total_bytes": total,
+                    "free_bytes": total - used,
+                    "usage_pct": round(pct, 2),
+                }
+            )
+        )
         return
 
     console.print(f"  Used:  {_humanize_size(used)}")
@@ -919,6 +925,7 @@ def _build_tree(
 
 # ── Info ──────────────────────────────────────────────────────────────────────
 
+
 def _compute_folder_size(client: "DegooClient", folder_id: str) -> tuple[int, int, int, bool]:
     """Recursively walk *folder_id* and return ``(total_bytes, file_count, folder_count, has_errors)``.
 
@@ -1168,6 +1175,7 @@ def mkdir(path: str, output_format: Optional[str]):
 
 # ── Transfer helpers ──────────────────────────────────────────────────────────
 
+
 def _resolve_parent_id(client: "DegooClient", parent_path: Optional[str]) -> str:
     """Return the Degoo folder ID for *parent_path* (or the saved cwd)."""
     if parent_path is None:
@@ -1225,6 +1233,7 @@ def _make_progress() -> Any:
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────
+
 
 def _upload_one(
     client: "DegooClient",
@@ -1381,7 +1390,10 @@ def _collect_upload_tasks(
         if entry.is_dir(follow_symlinks=False):
             tasks.extend(
                 _collect_upload_tasks(
-                    client, Path(entry.path), new_id, exclude,
+                    client,
+                    Path(entry.path),
+                    new_id,
+                    exclude,
                     _cat2_resolver=_child_resolver,
                 )
             )
@@ -1520,6 +1532,7 @@ def upload(
 
 # ── Download ──────────────────────────────────────────────────────────────────
 
+
 def _download_one(
     client: "DegooClient",
     item_id: str,
@@ -1593,11 +1606,7 @@ def _collect_download_tasks(
 
     for item in children:
         if client.is_folder(item):
-            tasks.extend(
-                _collect_download_tasks(
-                    client, str(item["ID"]), item["Name"], local_folder, skip_existing
-                )
-            )
+            tasks.extend(_collect_download_tasks(client, str(item["ID"]), item["Name"], local_folder, skip_existing))
         else:
             if skip_existing and (local_folder / item["Name"]).exists():
                 console.print(f"  [dim]skip[/dim] {item['Name']} (already exists)")
@@ -1609,9 +1618,7 @@ def _collect_download_tasks(
 
 @main.command()
 @click.argument("items", nargs=-1, required=True)
-@click.option(
-    "--dest", "-t", default=".", type=click.Path(), help="Local destination directory (default: .)"
-)
+@click.option("--dest", "-t", default=".", type=click.Path(), help="Local destination directory (default: .)")
 @click.option("--name", help="Override the downloaded filename (single file only)")
 @click.option("-r", "--recursive", is_flag=True, help="Download a folder recursively")
 @click.option("--skip-existing", is_flag=True, help="Skip files already present locally")
@@ -1669,9 +1676,7 @@ def download(
             if not recursive:
                 _err(f"{item_arg} is a folder — use -r / --recursive to download it")
                 raise SystemExit(1)
-            sub = _collect_download_tasks(
-                client, item_id, item["Name"], dest_path, skip_existing
-            )
+            sub = _collect_download_tasks(client, item_id, item["Name"], dest_path, skip_existing)
             all_tasks.extend((iid, iname, idest, None, sz) for iid, iname, idest, sz in sub)
         else:
             fname = name if len(items) == 1 else None
@@ -1698,8 +1703,16 @@ def download(
 
         def _do_download(args: tuple[str, str, Path, Optional[str], int]) -> None:
             iid, iname, idest, fname, _sz = args
-            _download_one(client, iid, iname, idest, progress, name_override=fname,
-                          overall_advance=_advance_overall, overwrite=overwrite)
+            _download_one(
+                client,
+                iid,
+                iname,
+                idest,
+                progress,
+                name_override=fname,
+                overall_advance=_advance_overall,
+                overwrite=overwrite,
+            )
 
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = {executor.submit(_do_download, task): task for task in all_tasks}
@@ -1807,10 +1820,7 @@ def mv(src: str, dest: str, output_format: Optional[str]) -> None:
                 else:
                     console.print(f"[green]✓[/green] Moved {src} → {dest_stripped}/{src_item['Name']}")
             else:
-                _err(
-                    f"{dest_stripped} already exists — "
-                    f"append '/' to move inside it, or choose a different name"
-                )
+                _err(f"{dest_stripped} already exists — append '/' to move inside it, or choose a different name")
                 raise SystemExit(1)
             return
 
@@ -1956,11 +1966,15 @@ def trash(limit: int, output_format: Optional[str]):
     total_bytes = sum(int(it.get("Size") or 0) for it in items)
 
     if _want_json(output_format):
-        console.print(_json_output({
-            "items": [_item_json(it) for it in items],
-            "count": len(items),
-            "total_bytes": total_bytes,
-        }))
+        console.print(
+            _json_output(
+                {
+                    "items": [_item_json(it) for it in items],
+                    "count": len(items),
+                    "total_bytes": total_bytes,
+                }
+            )
+        )
         return
 
     table = Table(title="🗑️  Recycle Bin", box=box.SIMPLE_HEAVY)
@@ -1979,9 +1993,7 @@ def trash(limit: int, output_format: Optional[str]):
         )
     console.print(table)
     total_human = _humanize_size(str(total_bytes)) if total_bytes else "unknown size"
-    console.print(
-        f"  [dim]{len(items)} item{'s' if len(items) != 1 else ''} · {total_human} total[/dim]"
-    )
+    console.print(f"  [dim]{len(items)} item{'s' if len(items) != 1 else ''} · {total_human} total[/dim]")
 
 
 @main.command("empty-trash")

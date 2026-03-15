@@ -25,9 +25,7 @@ class TestUploadVerifier:
         }
 
         verifier = UploadVerifier(max_retries=3)
-        result = verifier.verify_upload(
-            mock_client, "12345", "test.txt", 1024, verbose=False
-        )
+        result = verifier.verify_upload(mock_client, "12345", "test.txt", 1024, verbose=False)
 
         assert result["ID"] == "12345"
         assert result["DataSize"] == 1024
@@ -49,9 +47,7 @@ class TestUploadVerifier:
         ]
 
         verifier = UploadVerifier(max_retries=3, initial_wait=0.01)
-        result = verifier.verify_upload(
-            mock_client, "12345", "test.txt", 1024, verbose=False
-        )
+        result = verifier.verify_upload(mock_client, "12345", "test.txt", 1024, verbose=False)
 
         assert result["DataSize"] == 1024
         assert mock_client.get_item.call_count == 3
@@ -69,9 +65,7 @@ class TestUploadVerifier:
         verifier = UploadVerifier(max_retries=1, initial_wait=0.01)
 
         with pytest.raises(UploadVerificationError) as exc_info:
-            verifier.verify_upload(
-                mock_client, "12345", "test.txt", 1024, verbose=False
-            )
+            verifier.verify_upload(mock_client, "12345", "test.txt", 1024, verbose=False)
 
         assert exc_info.value.file_id == "12345"
         assert exc_info.value.filename == "test.txt"
@@ -91,9 +85,7 @@ class TestUploadVerifier:
         verifier = UploadVerifier(max_retries=1)
 
         with pytest.raises(UploadVerificationError) as exc_info:
-            verifier.verify_upload(
-                mock_client, "12345", "test.txt", 1024, verbose=False
-            )
+            verifier.verify_upload(mock_client, "12345", "test.txt", 1024, verbose=False)
 
         assert "GCS linkage" in exc_info.value.reason
 
@@ -107,9 +99,7 @@ class TestUploadVerifier:
         verifier = UploadVerifier(max_retries=1)
 
         with pytest.raises(UploadVerificationError) as exc_info:
-            verifier.verify_upload(
-                mock_client, "12345", "test.txt", 1024, verbose=False
-            )
+            verifier.verify_upload(mock_client, "12345", "test.txt", 1024, verbose=False)
 
         assert "API is down" in exc_info.value.reason
 
@@ -130,9 +120,7 @@ class TestUploadVerifier:
         verifier = UploadVerifier(max_retries=3, initial_wait=0.01)
 
         with mock.patch("time.sleep") as mock_sleep:
-            verifier.verify_upload(
-                mock_client, "12345", "test.txt", 1024, verbose=False
-            )
+            verifier.verify_upload(mock_client, "12345", "test.txt", 1024, verbose=False)
 
         # Should sleep between attempts: 1s (2^0), 2s (2^1)
         assert mock_sleep.call_count == 2
@@ -149,9 +137,7 @@ class TestUploadVerifier:
             "URL": "https://cdn.degoo.com/...",
         }
 
-        result = verify_and_retry(
-            mock_client, "12345", "test.txt", 1024, max_retries=3, verbose=False
-        )
+        result = verify_and_retry(mock_client, "12345", "test.txt", 1024, max_retries=3, verbose=False)
 
         assert result["ID"] == "12345"
 
