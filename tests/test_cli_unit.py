@@ -117,6 +117,8 @@ def test_logout_command(tmp_path):
 
 def test_login_429_sets_backoff_and_next_call_is_blocked(tmp_path):
     """A 429 from Degoo sets a backoff; subsequent login attempts fail locally."""
+    import pytest
+
     from cligoo.auth import AuthError, login
 
     backoff_file = tmp_path / ".login_backoff"
@@ -130,20 +132,18 @@ def test_login_429_sets_backoff_and_next_call_is_blocked(tmp_path):
         mock_resp.text = ""
 
         with patch("httpx.post", return_value=mock_resp):
-            try:
+            with pytest.raises(AuthError) as exc_info:
                 login("user@example.com", "pw")
-            except AuthError as e:
-                assert "429" in str(e) or "rate" in str(e).lower()
+            assert "429" in str(exc_info.value) or "rate" in str(exc_info.value).lower()
 
         # Backoff file should now exist
         assert backoff_file.exists()
 
         # Attempting login again should fail immediately (without hitting the network)
         with patch("httpx.post") as mock_post:
-            try:
+            with pytest.raises(AuthError) as exc_info2:
                 login("user@example.com", "pw")
-            except AuthError as e:
-                assert "rate" in str(e).lower() or "wait" in str(e).lower()
+            assert "rate" in str(exc_info2.value).lower() or "wait" in str(exc_info2.value).lower()
             mock_post.assert_not_called()  # no HTTP call made
 
 

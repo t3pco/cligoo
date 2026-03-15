@@ -87,6 +87,14 @@ def _json_output(data: Any) -> str:
     return json.dumps(data, indent=2, default=str)
 
 
+def _safe_int(value: Any) -> int:
+    """Parse *value* as int, tolerating float-strings (e.g. "1048576.0") and None."""
+    try:
+        return int(float(value)) if value not in (None, "", "None") else 0
+    except (ValueError, TypeError):
+        return 0
+
+
 def _item_json(item: dict) -> dict:
     """Normalise a raw Degoo item dict to a clean JSON-safe structure."""
     cat = item.get("Category", 0)
@@ -96,7 +104,7 @@ def _item_json(item: dict) -> dict:
         "category": cat,
         "category_name": CATEGORY_NAMES.get(cat, str(cat)),
         "is_folder": cat in FOLDER_CATEGORIES,
-        "size_bytes": int(item.get("Size") or 0) if cat not in FOLDER_CATEGORIES else None,
+        "size_bytes": _safe_int(item.get("Size")) if cat not in FOLDER_CATEGORIES else None,
         "parent_id": str(item.get("ParentID", "")),
         "path": item.get("FilePath"),
         "created": item.get("CreationTime"),
@@ -132,23 +140,32 @@ def _collect_tree_flat(
     max_depth: int,
     current_depth: int,
     limit: int,
-) -> list:
-    """Recursively collect all items under parent_id as a flat list with full paths."""
+) -> tuple[list, bool]:
+    """Recursively collect all items under parent_id as a flat list with full paths.
+
+    Returns ``(items, incomplete)`` where *incomplete* is True if any API error
+    was encountered while walking sub-folders (results may be partial).
+    """
     if current_depth >= max_depth:
-        return []
+        return [], False
     try:
         children = client.list_dir(parent_id, limit=limit)
     except DegooAPIError:
-        return []
+        return [], True
     result = []
+    incomplete = False
     for child in children:
         child_path = parent_path.rstrip("/") + "/" + child.get("Name", "")
         entry = _item_json(child)
         entry["path"] = child_path
         result.append(entry)
-        if child.get("Category", 0) in FOLDER_CATEGORIES:
-            result.extend(_collect_tree_flat(client, str(child["ID"]), child_path, max_depth, current_depth + 1, limit))
-    return result
+        child_id = str(child.get("ID") or "")
+        if child.get("Category", 0) in FOLDER_CATEGORIES and child_id:
+            sub, sub_incomplete = _collect_tree_flat(client, child_id, child_path, max_depth, current_depth + 1, limit)
+            result.extend(sub)
+            if sub_incomplete:
+                incomplete = True
+    return result, incomplete
 
 
 def _to_absolute(path: str) -> str:
@@ -568,9 +585,9 @@ def whoami(output_format: Optional[str]):
                     "name": f"{info.get('FirstName', '')} {info.get('LastName', '')}".strip(),
                     "email": info.get("Email"),
                     "account_type": info.get("AccountType"),
-                    "used_bytes": int(info.get("UsedQuota", 0)),
-                    "total_bytes": int(info.get("TotalQuota", 0)),
-                    "free_bytes": int(info.get("TotalQuota", 0)) - int(info.get("UsedQuota", 0)),
+                    "used_bytes": used,
+                    "total_bytes": total,
+                    "free_bytes": max(0, total - used),
                     "usage_pct": round(pct, 2),
                     "file_size_limit_bytes": int(info.get("FileSizeLimit") or 0),
                 }
@@ -777,6 +794,17 @@ def ls(
         parent_id = str(item["ID"])
         display_path = "/" + path.strip("/")
 
+    # ── Effective depth (--recursive overrides depth default of 0) ───────────
+    effective_depth = 99 if (recursive and depth == 0) else depth
+
+    # JSON + recursive: walk the tree directly; skip the flat list_dir call
+    if _want_json(output_format) and effective_depth > 0:
+        all_items, incomplete = _collect_tree_flat(client, parent_id, display_path, effective_depth, 0, limit)
+        console.print(
+            _json_output({"path": display_path, "items": all_items, "count": len(all_items), "incomplete": incomplete})
+        )
+        return
+
     try:
         items = client.list_dir(parent_id, limit=limit)
     except DegooAPIError as e:
@@ -792,15 +820,10 @@ def ls(
         # Default: alphabetical by name
         items.sort(key=lambda x: (x.get("Name") or "").lower(), reverse=reverse)
 
-    # ── Effective depth (--recursive overrides depth default of 0) ───────────
-    effective_depth = 99 if (recursive and depth == 0) else depth
-
     if _want_json(output_format):
-        if effective_depth > 0:
-            all_items = _collect_tree_flat(client, parent_id, display_path, effective_depth, 0, limit)
-        else:
-            all_items = [_item_json(it) for it in items]
-        console.print(_json_output({"path": display_path, "items": all_items, "count": len(all_items)}))
+        # flat JSON (no depth): use sorted items
+        flat = [_item_json(it) for it in items]
+        console.print(_json_output({"path": display_path, "items": flat, "count": len(flat), "incomplete": False}))
         return
 
     console.print(f"[dim]{display_path}[/dim]")
@@ -877,8 +900,10 @@ def tree(path: Optional[str], depth: int, limit: int, output_format: Optional[st
         root_name = item.get("Name", path)
 
     if _want_json(output_format):
-        items_flat = _collect_tree_flat(client, parent_id, "/" + root_name.strip("/"), depth, 0, limit)
-        console.print(_json_output({"root": root_name, "items": items_flat, "count": len(items_flat)}))
+        items_flat, incomplete = _collect_tree_flat(client, parent_id, "/" + root_name.strip("/"), depth, 0, limit)
+        console.print(
+            _json_output({"root": root_name, "items": items_flat, "count": len(items_flat), "incomplete": incomplete})
+        )
         return
 
     rich_tree = RichTree(f"📁 [bold]{root_name}[/bold]")
@@ -2110,7 +2135,8 @@ def shared(limit: int, long: bool, output_format: Optional[str]):
                     users = perms.get("Users") or []
                     entry["shared_with"] = [u.get("Email") or u.get("Name", "?") for u in users]
                 except DegooAPIError:
-                    entry["shared_with"] = None
+                    entry["shared_with"] = None  # API error — permissions unavailable
+                    entry["shared_with_error"] = True
             result_items.append(entry)
         console.print(_json_output(result_items))
         return
