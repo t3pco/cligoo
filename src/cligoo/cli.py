@@ -333,22 +333,32 @@ def login(email: Optional[str], password: Optional[str], browser: bool):
 
     saved_email, saved_password = get_saved_credentials()
 
-    if not email:
-        if saved_email:
-            email = click.prompt("Email", default=saved_email)
-        else:
-            email = click.prompt("Email")
-    else:
-        # Email was passed on the command line — let the user know which account
-        console.print(f"  Signing in as [bold]{email}[/bold]…")
-
-    if not password:
-        # Use stored password when email matches (or when no email was stored yet)
-        if saved_password and (saved_email is None or saved_email == email):
+    if not email and not password:
+        # No flags — use stored credentials silently when both are available
+        if saved_email and saved_password:
+            email = saved_email
             password = saved_password
-            console.print("  [dim]Using stored password.[/dim]")
+            console.print(f"  Signing in as [bold]{email}[/bold] using stored credentials…")
         else:
-            password = click.prompt("Password", hide_input=True)
+            # Partially missing — prompt for what we need
+            email = click.prompt("Email", default=saved_email) if saved_email else click.prompt("Email")
+            if saved_password and (saved_email is None or saved_email == email):
+                password = saved_password
+                console.print("  [dim]Using stored password.[/dim]")
+            else:
+                password = click.prompt("Password", hide_input=True)
+    else:
+        # At least one flag was passed explicitly
+        if not email:
+            email = click.prompt("Email", default=saved_email) if saved_email else click.prompt("Email")
+        else:
+            console.print(f"  Signing in as [bold]{email}[/bold]…")
+        if not password:
+            if saved_password and (saved_email is None or saved_email == email):
+                password = saved_password
+                console.print("  [dim]Using stored password.[/dim]")
+            else:
+                password = click.prompt("Password", hide_input=True)
 
     try:
         do_login(email, password)

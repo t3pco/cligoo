@@ -117,20 +117,12 @@ def test_logout_command(tmp_path):
 
 def test_login_429_sets_backoff_and_next_call_is_blocked(tmp_path):
     """A 429 from Degoo sets a backoff; subsequent login attempts fail locally."""
-    import time
+    from cligoo.auth import AuthError, login
 
-    import httpx
+    backoff_file = tmp_path / ".login_backoff"
 
-    from cligoo.auth import (
-        _LOGIN_BACKOFF_FILE,
-        _clear_login_backoff,
-        _set_login_backoff,
-        login,
-    )
-    from cligoo.constants import LOGIN_URL
-
-    # Patch CONFIG_DIR so we write to tmp_path, not ~/.config/cligoo
-    with patch("cligoo.auth.CONFIG_DIR", tmp_path), patch("cligoo.auth._LOGIN_BACKOFF_FILE", tmp_path / ".login_backoff"):
+    # Patch the module-level backoff file path
+    with patch("cligoo.auth._LOGIN_BACKOFF_FILE", backoff_file):
         # Simulate a 429 response
         mock_resp = MagicMock()
         mock_resp.status_code = 429
@@ -138,20 +130,16 @@ def test_login_429_sets_backoff_and_next_call_is_blocked(tmp_path):
         mock_resp.text = ""
 
         with patch("httpx.post", return_value=mock_resp):
-            from cligoo.auth import AuthError
-
             try:
                 login("user@example.com", "pw")
             except AuthError as e:
                 assert "429" in str(e) or "rate" in str(e).lower()
 
         # Backoff file should now exist
-        assert (tmp_path / ".login_backoff").exists()
+        assert backoff_file.exists()
 
         # Attempting login again should fail immediately (without hitting the network)
         with patch("httpx.post") as mock_post:
-            from cligoo.auth import AuthError
-
             try:
                 login("user@example.com", "pw")
             except AuthError as e:
