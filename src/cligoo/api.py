@@ -10,7 +10,7 @@ import base64
 import hashlib
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Generator, Optional
 
 import httpx
 
@@ -261,7 +261,7 @@ class DegooClient:
         parent_id: str = "0",
         *,
         order: int = DEFAULT_ORDER,
-    ):
+    ) -> Generator[dict, None, None]:
         """Yield children of a folder one page at a time (generator).
 
         Unlike :meth:`list_dir`, this never accumulates all results in memory —
@@ -279,7 +279,7 @@ class DegooClient:
                 variables["NextToken"] = next_token
 
             data = self._gql(GET_FILE_CHILDREN, variables, operation="GetFileChildren5")
-            result = data["getFileChildren5"]
+            result = data.get("getFileChildren5") or {}
             for item in result.get("Items") or []:
                 yield item
 

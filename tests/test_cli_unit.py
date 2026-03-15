@@ -498,9 +498,12 @@ def test_info_folder_shows_content_size():
         result = _runner().invoke(main, ["info", "200"])
     assert result.exit_code == 0, result.output
     assert "Content Size" in result.output
-    assert "Files" in result.output
-    # 2 files reported
-    assert "2" in result.output
+    # Exactly 2 files should be reported on the Files row (not Sub-folders)
+    import re
+    lines = result.output.splitlines()
+    files_line = next((ln for ln in lines if "Files" in ln and "Sub-folders" not in ln), None)
+    assert files_line is not None, "Expected a 'Files' row in output"
+    assert re.search(r"\b2\b", files_line), f"Expected file count 2 on Files row, got: {files_line}"
 
 
 def test_info_folder_no_size_flag():
@@ -527,6 +530,34 @@ def test_info_folder_no_size_flag():
     assert result.exit_code == 0, result.output
     assert "skipped" in result.output
     mock.iter_dir.assert_not_called()
+
+
+def test_info_folder_incomplete_on_api_error():
+    """When iter_dir raises DegooAPIError mid-walk, Content Size row shows (incomplete)."""
+    from cligoo.api import DegooAPIError as _APIError
+
+    mock = _mock_client()
+    folder = {
+        "ID": "200",
+        "Name": "Photos",
+        "Category": 2,
+        "Size": "0",
+        "ParentID": "111",
+        "LastModificationTime": "1700000000",
+        "CreationTime": "1700000000",
+        "FilePath": "/Web/Photos",
+        "IsInRecycleBin": False,
+        "Description": "",
+        "URL": "",
+        "ThumbnailURL": "",
+    }
+    mock.get_item.return_value = folder
+    mock.is_folder.side_effect = lambda item: item.get("Category", 0) in {1, 2, 3}
+    mock.iter_dir.side_effect = _APIError("token expired")
+    with _patch_client(mock):
+        result = _runner().invoke(main, ["info", "200"])
+    assert result.exit_code == 0, result.output
+    assert "incomplete" in result.output
 
 
 # ── search ────────────────────────────────────────────────────────────────────

@@ -802,15 +802,18 @@ def _build_tree(
 
 # ── Info ──────────────────────────────────────────────────────────────────────
 
-def _compute_folder_size(client: "DegooClient", folder_id: str) -> tuple[int, int, int]:
-    """Recursively walk *folder_id* and return ``(total_bytes, file_count, folder_count)``.
+def _compute_folder_size(client: "DegooClient", folder_id: str) -> tuple[int, int, int, bool]:
+    """Recursively walk *folder_id* and return ``(total_bytes, file_count, folder_count, has_errors)``.
 
     Uses BFS + ``iter_dir`` so only one API page is live in memory at a time.
     A visited-ID set guards against cycles in the folder graph.
+    ``has_errors`` is True when at least one folder could not be listed — the
+    numeric totals are a lower bound, not an exact count.
     """
     total_bytes = 0
     file_count = 0
     folder_count = 0
+    has_errors = False
     visited: set[str] = {folder_id}
     queue = [folder_id]
     while queue:
@@ -830,8 +833,9 @@ def _compute_folder_size(client: "DegooClient", folder_id: str) -> tuple[int, in
                     except (ValueError, TypeError):
                         pass
         except DegooAPIError:
+            has_errors = True
             continue
-    return total_bytes, file_count, folder_count
+    return total_bytes, file_count, folder_count, has_errors
 
 
 @main.command()
@@ -859,13 +863,15 @@ def info(item_path: str, no_size: bool):
         raise SystemExit(1)
 
     # For folders compute recursive content stats unless the user opts out.
-    folder_stats: Optional[tuple[int, int, int]] = None
+    folder_stats: Optional[tuple[int, int, int, bool]] = None
     if item.get("Category", 0) in FOLDER_CATEGORIES and not no_size:
         with console.status("[dim]Calculating folder size…[/dim]", spinner="dots"):
             try:
                 folder_stats = _compute_folder_size(client, item["ID"])
-            except Exception:
-                folder_stats = None
+            except DegooAPIError as exc:
+                _err(f"Could not calculate folder size: {exc}")
+            except Exception as exc:
+                _err(f"Unexpected error calculating folder size: {exc}")
 
     _print_item_detail(item, folder_stats=folder_stats, size_skipped=no_size)
 
@@ -873,7 +879,7 @@ def info(item_path: str, no_size: bool):
 def _print_item_detail(
     item: dict,
     *,
-    folder_stats: Optional[tuple[int, int, int]] = None,
+    folder_stats: Optional[tuple[int, int, int, bool]] = None,
     size_skipped: bool = False,
 ):
     table = Table(title=item.get("Name", "Item"), box=box.ROUNDED)
@@ -918,8 +924,11 @@ def _print_item_detail(
         if size_skipped:
             table.add_row("Content Size", "[dim]skipped (--no-size)[/dim]")
         elif folder_stats is not None:
-            total_bytes, file_count, folder_count = folder_stats
-            table.add_row("Content Size", _humanize_size(total_bytes))
+            total_bytes, file_count, folder_count, incomplete = folder_stats
+            size_label = _humanize_size(total_bytes)
+            if incomplete:
+                size_label += " [dim](incomplete — some folders could not be listed)[/dim]"
+            table.add_row("Content Size", size_label)
             table.add_row("Files", str(file_count))
             table.add_row("Sub-folders", str(folder_count))
         else:
