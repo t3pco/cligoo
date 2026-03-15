@@ -23,8 +23,18 @@ timeout = 60
 debug = false
 
 [session]
-# Directory for token persistence (fallback when keyring unavailable)
-token_dir = "__TOKEN_DIR__"
+# Login method used by bare `cligoo login`: "password" or "browser".
+# Leave commented out to be prompted each time.
+# login_method = "password"
+
+# Chrome profile directory name for `cligoo login --browser`.
+# Run `cligoo config` to pick from detected profiles.
+# Leave commented out to use a fresh temporary profile each time.
+# chrome_profile = "Default"
+
+# Concurrent threads used for parallel uploads and downloads (default 20).
+# Override per-command with --workers N.
+transfer_workers = 20
 
 # Auto re-login when token expires (true/false)
 auto_relogin = true
@@ -32,6 +42,13 @@ auto_relogin = true
 # Default remote destination for uploads when -t is not specified.
 # Must be an absolute Degoo path (e.g. "/Web", "/Web/Photos").
 default_upload_dir = "/Web"
+
+# Number of retry attempts for failed GCS uploads (default 5).
+# Retries apply to transient network errors and 5xx responses only —
+# 4xx (policy violations) are not retried as they won't recover.
+# Exponential backoff: 1s, 2s, 4s … capped at 30s between attempts.
+# Set to 0 to disable retries entirely.
+upload_retries = 5
 
 [output]
 # Default output format: "table" or "json"
