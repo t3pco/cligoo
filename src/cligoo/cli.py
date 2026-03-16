@@ -1259,8 +1259,12 @@ def _transfer_summary(ok: int, skipped: int = 0, failed: int = 0, action: str = 
     return ", ".join(parts) if parts else f"0 {action}"
 
 
-def _make_progress() -> Any:
-    """Create a shared Rich Progress display for file transfers."""
+def _make_progress(progress_console: Any = None) -> Any:
+    """Create a shared Rich Progress display for file transfers.
+
+    Pass *progress_console* = ``err_console`` when JSON output is active so
+    the progress bar is written to stderr and stdout stays clean JSON.
+    """
     from rich.progress import (
         BarColumn,
         DownloadColumn,
@@ -1280,6 +1284,7 @@ def _make_progress() -> Any:
         DownloadColumn(),
         TransferSpeedColumn(),
         TimeRemainingColumn(),
+        console=progress_console,
     )
 
 
@@ -1349,6 +1354,7 @@ def _collect_upload_tasks(
     exclude: tuple[str, ...] = (),
     *,
     _cat2_resolver: "Optional[Any]" = None,
+    _log_console: "Any" = None,
 ) -> list[tuple[Path, str]]:
     """Recursively create remote dirs and return ``[(local_file, remote_parent_id)]``.
 
@@ -1376,12 +1382,12 @@ def _collect_upload_tasks(
     mkdir_result: str = "OK"
     try:
         mkdir_result = client.mkdir(local_dir.name, parent_id)
-        console.print(f"  [blue]mkdir[/blue] {local_dir.name}")
+        (_log_console or console).print(f"  [blue]mkdir[/blue] {local_dir.name}")
     except DegooAPIError as e:
         msg = str(e).lower()
         if "invalid input" in msg or "already exist" in msg:
             folder_existed = True
-            console.print(f"  [dim]mkdir[/dim] {local_dir.name} [dim](already exists)[/dim]")
+            (_log_console or console).print(f"  [dim]mkdir[/dim] {local_dir.name} [dim](already exists)[/dim]")
         else:
             raise RuntimeError(f"mkdir {local_dir.name}: {e}") from e
 
@@ -1436,7 +1442,7 @@ def _collect_upload_tasks(
     tasks: list[tuple[Path, str]] = []
     for entry in sorted(_os.scandir(local_dir), key=lambda e: (e.is_dir(), e.name)):
         if exclude and any(fnmatch.fnmatch(entry.name, pat) for pat in exclude):
-            console.print(f"  [dim]skip[/dim] {entry.name}")
+            (_log_console or console).print(f"  [dim]skip[/dim] {entry.name}")
             continue
         if entry.is_dir(follow_symlinks=False):
             tasks.extend(
@@ -1446,6 +1452,7 @@ def _collect_upload_tasks(
                     new_id,
                     exclude,
                     _cat2_resolver=_child_resolver,
+                    _log_console=_log_console,
                 )
             )
             # After the child mkdir triggered Cat=2 creation, refresh new_id
@@ -1517,7 +1524,13 @@ def upload(
                 _err(f"{p} is a directory — use -r / --recursive to upload it")
                 raise SystemExit(1)
             try:
-                sub = _collect_upload_tasks(client, p, parent_id, exclude)
+                sub = _collect_upload_tasks(
+                    client,
+                    p,
+                    parent_id,
+                    exclude,
+                    _log_console=err_console if _want_json(output_format) else None,
+                )
             except RuntimeError as e:
                 _err(str(e))
                 raise SystemExit(1)
@@ -1537,7 +1550,7 @@ def upload(
 
     total_bytes = sum(fp.stat().st_size for fp, _, _ in all_tasks)
 
-    with _make_progress() as progress:
+    with _make_progress(progress_console=err_console if _want_json(output_format) else None) as progress:
         overall = progress.add_task(
             f"[bold]Total ({len(all_tasks)} file(s))[/bold]",
             total=total_bytes,
@@ -1642,14 +1655,17 @@ def _collect_download_tasks(
     folder_name: str,
     local_dest: Path,
     skip_existing: bool = False,
+    _log_console: "Any" = None,
 ) -> list[tuple[str, str, Path, int]]:
     """Recursively create local dirs and return ``[(item_id, item_name, local_dest_dir, size)]``.
 
     If *skip_existing* is True, files already present on disk are omitted.
+    Pass *_log_console* = ``err_console`` to keep mkdir/skip logs off stdout in
+    JSON mode.
     """
     local_folder = local_dest / folder_name
     local_folder.mkdir(parents=True, exist_ok=True)
-    console.print(f"  [blue]mkdir[/blue] {local_folder}")
+    (_log_console or console).print(f"  [blue]mkdir[/blue] {local_folder}")
 
     tasks: list[tuple[str, str, Path, int]] = []
     try:
@@ -1660,10 +1676,19 @@ def _collect_download_tasks(
 
     for item in children:
         if client.is_folder(item):
-            tasks.extend(_collect_download_tasks(client, str(item["ID"]), item["Name"], local_folder, skip_existing))
+            tasks.extend(
+                _collect_download_tasks(
+                    client,
+                    str(item["ID"]),
+                    item["Name"],
+                    local_folder,
+                    skip_existing,
+                    _log_console=_log_console,
+                )
+            )
         else:
             if skip_existing and (local_folder / item["Name"]).exists():
-                console.print(f"  [dim]skip[/dim] {item['Name']} (already exists)")
+                (_log_console or console).print(f"  [dim]skip[/dim] {item['Name']} (already exists)")
                 continue
             size = int(item.get("Size") or 0)
             tasks.append((str(item["ID"]), item["Name"], local_folder, size))
@@ -1730,7 +1755,14 @@ def download(
             if not recursive:
                 _err(f"{item_arg} is a folder — use -r / --recursive to download it")
                 raise SystemExit(1)
-            sub = _collect_download_tasks(client, item_id, item["Name"], dest_path, skip_existing)
+            sub = _collect_download_tasks(
+                client,
+                item_id,
+                item["Name"],
+                dest_path,
+                skip_existing,
+                _log_console=err_console if _want_json(output_format) else None,
+            )
             all_tasks.extend((iid, iname, idest, None, sz) for iid, iname, idest, sz in sub)
         else:
             fname = name if len(items) == 1 else None
@@ -1749,7 +1781,7 @@ def download(
 
     total_bytes = sum(sz for _, _, _, _, sz in all_tasks)
 
-    with _make_progress() as progress:
+    with _make_progress(progress_console=err_console if _want_json(output_format) else None) as progress:
         overall = progress.add_task(
             f"[bold]Total ({len(all_tasks)} file(s))[/bold]",
             total=total_bytes or len(all_tasks),
