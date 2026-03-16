@@ -916,7 +916,10 @@ def tree(path: Optional[str], depth: int, limit: int, output_format: Optional[st
         root_name = item.get("Name", path)
 
     if _want_json(output_format):
-        items_flat, incomplete = _collect_tree_flat(client, parent_id, "/" + root_name.strip("/"), depth, 0, limit)
+        # Use the full requested path as prefix so item paths are absolute
+        # (e.g. /Web/Photos/img.jpg not /Photos/img.jpg).
+        root_path = "/" if (path is None or path in ("/", "0")) else "/" + path.strip("/")
+        items_flat, incomplete = _collect_tree_flat(client, parent_id, root_path, depth, 0, limit)
         console.print(
             _json_output({"root": root_name, "items": items_flat, "count": len(items_flat), "incomplete": incomplete})
         )
@@ -1523,7 +1526,10 @@ def upload(
             all_tasks.append((p, parent_id, name if len(files) == 1 else None))
 
     if not all_tasks:
-        console.print("[yellow]⚠[/yellow]  No files to upload.")
+        if _want_json(output_format):
+            console.print(_json_output({"uploaded": 0, "skipped": 0, "failed": 0, "errors": []}))
+        else:
+            console.print("[yellow]⚠[/yellow]  No files to upload.")
         return
 
     ok = failed = skipped = 0
@@ -1732,7 +1738,10 @@ def download(
             all_tasks.append((item_id, item["Name"], dest_path, fname, size))
 
     if not all_tasks:
-        console.print("[yellow]⚠[/yellow]  No files to download.")
+        if _want_json(output_format):
+            console.print(_json_output({"downloaded": 0, "failed": 0, "errors": []}))
+        else:
+            console.print("[yellow]⚠[/yellow]  No files to download.")
         return
 
     ok = failed = 0
@@ -2135,7 +2144,10 @@ def shared(limit: int, long: bool, output_format: Optional[str]):
         raise SystemExit(1)
 
     if not items:
-        console.print("[dim]  No shared items.[/dim]")
+        if _want_json(output_format):
+            console.print(_json_output({"items": [], "count": 0}))
+        else:
+            console.print("[dim]  No shared items.[/dim]")
         return
 
     if _want_json(output_format):
