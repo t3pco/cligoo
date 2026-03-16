@@ -48,6 +48,7 @@ api.py helpers
   resolve_path_under:  returns Cat=2 folder when both Cat=6 ghost and Cat=2
                        folder share the same name
 """
+
 from __future__ import annotations
 
 import json
@@ -106,6 +107,7 @@ def _cwd_patch(tmp_path: Path, path: str = "/Web"):
 
 # ── 1. Single file → CWD ──────────────────────────────────────────────────────
 
+
 def test_upload_single_file_to_cwd(tmp_path):
     """Upload a single file; destination defaults to stored CWD."""
     f = tmp_path / "report.txt"
@@ -120,6 +122,7 @@ def test_upload_single_file_to_cwd(tmp_path):
 
 # ── 2. Single file → explicit --dest ──────────────────────────────────────────
 
+
 def test_upload_single_file_explicit_dest(tmp_path):
     f = tmp_path / "data.bin"
     f.write_bytes(b"\x00" * 64)
@@ -131,6 +134,7 @@ def test_upload_single_file_explicit_dest(tmp_path):
 
 
 # ── 3. --name override ────────────────────────────────────────────────────────
+
 
 def test_upload_name_override(tmp_path):
     """--name renames the uploaded file."""
@@ -147,6 +151,7 @@ def test_upload_name_override(tmp_path):
 
 # ── 4. Hard API error → exit 1 ────────────────────────────────────────────────
 
+
 def test_upload_hard_api_error_exits_1(tmp_path):
     f = tmp_path / "fail.txt"
     f.write_text("x")
@@ -158,6 +163,7 @@ def test_upload_hard_api_error_exits_1(tmp_path):
 
 
 # ── 5. Directory without -r ───────────────────────────────────────────────────
+
 
 def test_upload_directory_without_r_errors(tmp_path):
     d = tmp_path / "mydir"
@@ -171,6 +177,7 @@ def test_upload_directory_without_r_errors(tmp_path):
 
 
 # ── 6. Recursive dir: mkdir + upload per file ─────────────────────────────────
+
 
 def test_upload_recursive_dir_calls_mkdir_and_upload(tmp_path):
     d = tmp_path / "holiday"
@@ -190,6 +197,7 @@ def test_upload_recursive_dir_calls_mkdir_and_upload(tmp_path):
 
 # ── 7. Multi-file ──────────────────────────────────────────────────────────────
 
+
 def test_upload_multi_file(tmp_path):
     f1 = tmp_path / "a.jpg"
     f2 = tmp_path / "b.jpg"
@@ -206,6 +214,7 @@ def test_upload_multi_file(tmp_path):
 
 # ── 8. --exclude glob skips matching files ────────────────────────────────────
 
+
 def test_upload_exclude_pattern_skips_matching_files(tmp_path):
     d = tmp_path / "proj"
     d.mkdir()
@@ -218,14 +227,14 @@ def test_upload_exclude_pattern_skips_matching_files(tmp_path):
     with _patch_client(mock):
         result = _runner().invoke(
             main,
-            ["upload", str(d), "--dest", "/Web", "-r",
-             "--exclude", "*.tmp", "--exclude", ".DS_Store"],
+            ["upload", str(d), "--dest", "/Web", "-r", "--exclude", "*.tmp", "--exclude", ".DS_Store"],
         )
     assert result.exit_code == 0, result.output
     assert mock.upload.call_count == 1  # only main.py
 
 
 # ── 9. Storage-rejected file (HTTP 4xx) → skipped, exit 0 ────────────────────
+
 
 def test_upload_storage_rejected_counted_as_skipped(tmp_path):
     """.DS_Store-style rejections show as 'skipped' and exit 0."""
@@ -251,6 +260,7 @@ def test_upload_storage_rejected_403_counted_as_skipped(tmp_path):
 
 
 # ── 10. Dedup: file already in folder → skipped ───────────────────────────────
+
 
 def test_upload_dedup_file_already_in_folder_is_skipped(tmp_path):
     """api.upload raises DegooAlreadyExistsError when file is already linked."""
@@ -282,6 +292,7 @@ def test_upload_dedup_already_in_folder_not_counted_as_failure(tmp_path):
 
 # ── 12. Folder already exists (Invalid input!) → reuse ID ────────────────────
 
+
 def test_upload_recursive_folder_already_exists_is_reused(tmp_path):
     """mkdir returns 'Invalid input!' → existing folder ID reused, files uploaded."""
     d = tmp_path / "Prints"
@@ -304,6 +315,7 @@ def test_upload_recursive_folder_already_exists_is_reused(tmp_path):
 
 # ── 13. Folder + files already exist → all skipped, exit 0 ───────────────────
 
+
 def test_upload_recursive_all_already_exist(tmp_path):
     d = tmp_path / "Prints"
     d.mkdir()
@@ -322,6 +334,7 @@ def test_upload_recursive_all_already_exist(tmp_path):
 
 
 # ── 14. Nested recursive dirs: mkdir called for each ─────────────────────────
+
 
 def test_upload_recursive_nested_dirs_mkdir_per_subdir(tmp_path):
     """Three levels deep: mkdir called for each directory level."""
@@ -349,6 +362,7 @@ def test_upload_recursive_nested_dirs_mkdir_per_subdir(tmp_path):
 
 # ── 15. Mixed success + skip → exit 0 ────────────────────────────────────────
 
+
 def test_upload_mixed_success_and_skip_exits_0(tmp_path):
     f_ok = tmp_path / "new.jpg"
     f_skip = tmp_path / "dup.jpg"
@@ -370,6 +384,7 @@ def test_upload_mixed_success_and_skip_exits_0(tmp_path):
 
 
 # ── 16. Mixed success + failure → exit 1 ──────────────────────────────────────
+
 
 def test_upload_mixed_success_and_failure_exits_1(tmp_path):
     f_ok = tmp_path / "good.jpg"
@@ -393,6 +408,7 @@ def test_upload_mixed_success_and_failure_exits_1(tmp_path):
 
 # ── 17. Non-existent source file → exit 1 ────────────────────────────────────
 
+
 def test_upload_nonexistent_source_exits_1(tmp_path):
     mock = _mock_client()
     with _patch_client(mock), _cwd_patch(tmp_path):
@@ -401,6 +417,7 @@ def test_upload_nonexistent_source_exits_1(tmp_path):
 
 
 # ── 18. --workers accepted ────────────────────────────────────────────────────
+
 
 def test_upload_workers_option_accepted(tmp_path):
     f = tmp_path / "file.txt"
@@ -418,6 +435,7 @@ def test_upload_workers_option_accepted(tmp_path):
 
 # ── 1. By numeric ID ──────────────────────────────────────────────────────────
 
+
 def test_download_by_id(tmp_path):
     mock = _mock_client()
     mock.download.return_value = tmp_path / "photo.jpg"
@@ -428,6 +446,7 @@ def test_download_by_id(tmp_path):
 
 
 # ── 2. By path ────────────────────────────────────────────────────────────────
+
 
 def test_download_by_path(tmp_path):
     mock = _mock_client()
@@ -448,13 +467,12 @@ def test_download_by_path(tmp_path):
 
 # ── 3. --name override ────────────────────────────────────────────────────────
 
+
 def test_download_name_override(tmp_path):
     mock = _mock_client()
     mock.download.return_value = tmp_path / "final.pdf"
     with _patch_client(mock):
-        result = _runner().invoke(
-            main, ["download", "999", "--dest", str(tmp_path), "--name", "final.pdf"]
-        )
+        result = _runner().invoke(main, ["download", "999", "--dest", str(tmp_path), "--name", "final.pdf"])
     assert result.exit_code == 0, result.output
     _call = mock.download.call_args
     # name kwarg should be "final.pdf"
@@ -462,6 +480,7 @@ def test_download_name_override(tmp_path):
 
 
 # ── 4. API error → exit 1 ─────────────────────────────────────────────────────
+
 
 def test_download_api_error_exits_1(tmp_path):
     mock = _mock_client()
@@ -472,6 +491,7 @@ def test_download_api_error_exits_1(tmp_path):
 
 
 # ── 5. Folder without -r → exit 1 ────────────────────────────────────────────
+
 
 def test_download_folder_without_r_errors(tmp_path):
     mock = _mock_client()
@@ -490,6 +510,7 @@ def test_download_folder_without_r_errors(tmp_path):
 
 
 # ── 6. Folder recursive ───────────────────────────────────────────────────────
+
 
 def test_download_folder_recursive(tmp_path):
     mock = _mock_client()
@@ -511,19 +532,19 @@ def test_download_folder_recursive(tmp_path):
 
 # ── 7. Multi-item ─────────────────────────────────────────────────────────────
 
+
 def test_download_multi_item(tmp_path):
     mock = _mock_client()
     mock.download.return_value = tmp_path / "photo.jpg"
     with _patch_client(mock):
-        result = _runner().invoke(
-            main, ["download", "111", "222", "333", "--dest", str(tmp_path)]
-        )
+        result = _runner().invoke(main, ["download", "111", "222", "333", "--dest", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert mock.download.call_count == 3
     assert "3" in result.output
 
 
 # ── 8. --skip-existing omits existing local files ─────────────────────────────
+
 
 def test_download_skip_existing_omits_present_files(tmp_path):
     mock = _mock_client()
@@ -553,13 +574,12 @@ def test_download_skip_existing_omits_present_files(tmp_path):
 
 # ── 9. --overwrite passed to client.download ──────────────────────────────────
 
+
 def test_download_overwrite_flag_passed_to_client(tmp_path):
     mock = _mock_client()
     mock.download.return_value = tmp_path / "photo.jpg"
     with _patch_client(mock):
-        result = _runner().invoke(
-            main, ["download", "999", "--dest", str(tmp_path), "--overwrite"]
-        )
+        result = _runner().invoke(main, ["download", "999", "--dest", str(tmp_path), "--overwrite"])
     assert result.exit_code == 0, result.output
     _call = mock.download.call_args
     assert _call.kwargs.get("overwrite") is True
@@ -570,15 +590,14 @@ def test_download_no_overwrite_flag_defaults_false(tmp_path):
     mock = _mock_client()
     mock.download.return_value = tmp_path / "photo.jpg"
     with _patch_client(mock):
-        result = _runner().invoke(
-            main, ["download", "999", "--dest", str(tmp_path)]
-        )
+        result = _runner().invoke(main, ["download", "999", "--dest", str(tmp_path)])
     assert result.exit_code == 0, result.output
     _call = mock.download.call_args
     assert _call.kwargs.get("overwrite") is False
 
 
 # ── 10. Numbered copy: file saved as "name (1).ext" ──────────────────────────
+
 
 def test_download_numbered_copy_when_file_exists(tmp_path):
     """_unique_local_path: when dest exists, returns stem (1).suffix."""
@@ -608,6 +627,7 @@ def test_download_numbered_copy_no_conflict(tmp_path):
 
 # ── 11. Cat=6 / no-URL item treated as folder ────────────────────────────────
 
+
 def test_download_cat6_no_url_requires_r(tmp_path):
     """Category=6 items without a URL are treated as folders; -r required."""
     mock = _mock_client()
@@ -635,9 +655,7 @@ def test_download_cat6_no_url_recursive_lists_children(tmp_path):
     mock.list_dir.return_value = [child]
     mock.download.return_value = tmp_path / "Backup" / "db.sql"
     with _patch_client(mock):
-        result = _runner().invoke(
-            main, ["download", "/Web/Backup", "--dest", str(tmp_path), "-r"]
-        )
+        result = _runner().invoke(main, ["download", "/Web/Backup", "--dest", str(tmp_path), "-r"])
     assert result.exit_code == 0, result.output
     mock.list_dir.assert_called()
     mock.download.assert_called_once()
@@ -645,17 +663,17 @@ def test_download_cat6_no_url_recursive_lists_children(tmp_path):
 
 # ── 12. --workers accepted ────────────────────────────────────────────────────
 
+
 def test_download_workers_option_accepted(tmp_path):
     mock = _mock_client()
     mock.download.return_value = tmp_path / "photo.jpg"
     with _patch_client(mock):
-        result = _runner().invoke(
-            main, ["download", "999", "--dest", str(tmp_path), "--workers", "3"]
-        )
+        result = _runner().invoke(main, ["download", "999", "--dest", str(tmp_path), "--workers", "3"])
     assert result.exit_code == 0, result.output
 
 
 # ── 13. Non-existent remote path → exit 1 ────────────────────────────────────
+
 
 def test_download_nonexistent_path_exits_1(tmp_path):
     mock = _mock_client()
@@ -711,9 +729,7 @@ class TestResolvePathUnder:
         client.is_folder.side_effect = DegooClient.is_folder
         client.list_dir.return_value = items
         # Delegate to the real resolve_path_under implementation
-        client.resolve_path_under.side_effect = lambda pid, name: DegooClient.resolve_path_under(
-            client, pid, name
-        )
+        client.resolve_path_under.side_effect = lambda pid, name: DegooClient.resolve_path_under(client, pid, name)
         return client
 
     def test_returns_cat2_when_both_present(self):

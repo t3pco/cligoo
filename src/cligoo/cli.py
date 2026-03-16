@@ -47,8 +47,10 @@ from .config import (
     get_compact_json,
     get_default_upload_dir,
     get_login_method,
+    get_output_format,
     get_standalone_nav_enabled,
     get_transfer_workers,
+    get_upload_retries,
 )
 from .constants import CATEGORY_NAMES, FOLDER_CATEGORIES
 
@@ -74,7 +76,6 @@ def _save_cwd(path: str) -> None:
     _CWD_FILE.write_text(json.dumps({"path": path}))
 
 
-
 def _err(msg: object) -> None:
     """Print an error message, safely escaping Rich markup in the text."""
     err_console.print(f"[red]✗[/red] {_esc(str(msg))}")
@@ -85,6 +86,90 @@ def _json_output(data: Any) -> str:
     if get_compact_json():
         return json.dumps(data, default=str)
     return json.dumps(data, indent=2, default=str)
+
+
+def _safe_int(value: Any) -> int:
+    """Parse *value* as int, tolerating float-strings (e.g. "1048576.0") and None."""
+    try:
+        return int(float(value)) if value not in (None, "", "None") else 0
+    except (ValueError, TypeError):
+        return 0
+
+
+def _item_json(item: dict) -> dict:
+    """Normalise a raw Degoo item dict to a clean JSON-safe structure."""
+    cat = item.get("Category", 0)
+    return {
+        "id": str(item.get("ID", "")),
+        "name": item.get("Name", ""),
+        "category": cat,
+        "category_name": CATEGORY_NAMES.get(cat, str(cat)),
+        "is_folder": cat in FOLDER_CATEGORIES,
+        "size_bytes": _safe_int(item.get("Size")) if cat not in FOLDER_CATEGORIES else None,
+        "parent_id": str(item.get("ParentID", "")),
+        "path": item.get("FilePath"),
+        "created": item.get("CreationTime"),
+        "modified": item.get("LastModificationTime"),
+        "uploaded": item.get("LastUploadTime"),
+        "url": item.get("URL") or None,
+        "thumbnail_url": item.get("ThumbnailURL") or None,
+        "in_recycle_bin": item.get("IsInRecycleBin", False),
+    }
+
+
+_OUTPUT_OPTION = click.option(
+    "--output",
+    "-o",
+    "output_format",
+    type=click.Choice(["table", "json"], case_sensitive=False),
+    default=None,
+    help='Output format: "table" (default) or "json".',
+)
+
+
+def _want_json(output_format: Optional[str]) -> bool:
+    """Return True when JSON output is requested (flag or config)."""
+    if output_format is not None:
+        return output_format.lower() == "json"
+    return get_output_format() == "json"
+
+
+def _collect_tree_flat(
+    client: "DegooClient",
+    parent_id: str,
+    parent_path: str,
+    max_depth: int,
+    current_depth: int,
+    limit: int,
+) -> tuple[list, bool]:
+    """Recursively collect all items under parent_id as a flat list with full paths.
+
+    Returns ``(items, incomplete)`` where *incomplete* is True if any API error
+    was encountered while walking sub-folders (results may be partial), or if
+    a folder's child list was truncated at *limit* (more items may exist).
+    """
+    if current_depth >= max_depth:
+        return [], False
+    try:
+        children = client.list_dir(parent_id, limit=limit)
+    except DegooAPIError:
+        return [], True
+    result = []
+    # If the returned count equals the limit the folder may have more children
+    # that were silently dropped — flag the whole tree as potentially incomplete.
+    incomplete = len(children) >= limit
+    for child in children:
+        child_path = parent_path.rstrip("/") + "/" + child.get("Name", "")
+        entry = _item_json(child)
+        entry["path"] = child_path
+        result.append(entry)
+        child_id = str(child.get("ID") or "")
+        if child.get("Category", 0) in FOLDER_CATEGORIES and child_id:
+            sub, sub_incomplete = _collect_tree_flat(client, child_id, child_path, max_depth, current_depth + 1, limit)
+            result.extend(sub)
+            if sub_incomplete:
+                incomplete = True
+    return result, incomplete
 
 
 def _to_absolute(path: str) -> str:
@@ -107,8 +192,11 @@ def _client() -> DegooClient:
     from .auth import get_token as _get_token
 
     try:
-        token = _get_token()  # eagerly validate — raises AuthError if no valid token
-        return DegooClient(token=token)  # reuse token; avoids a second round-trip
+        _get_token()  # eagerly validate — raises AuthError if no valid token
+        # Do NOT pass token= explicitly: DegooClient.token calls get_token() on
+        # every request so short-lived access tokens are refreshed transparently
+        # during long-running uploads/downloads without interrupting the transfer.
+        return DegooClient()
     except AuthError as e:
         _err(e)
         raise SystemExit(1)
@@ -269,22 +357,33 @@ def login(email: Optional[str], password: Optional[str], browser: bool):
 
     saved_email, saved_password = get_saved_credentials()
 
-    if not email:
-        if saved_email:
-            email = click.prompt("Email", default=saved_email)
-        else:
-            email = click.prompt("Email")
-    else:
-        # Email was passed on the command line — let the user know which account
-        console.print(f"  Signing in as [bold]{email}[/bold]…")
-
-    if not password:
-        # Use stored password when email matches (or when no email was stored yet)
-        if saved_password and (saved_email is None or saved_email == email):
+    if not email and not password:
+        # No flags — use stored credentials silently when both are available
+        if saved_email and saved_password:
+            email = saved_email
             password = saved_password
-            console.print("  [dim]Using stored password.[/dim]")
+            console.print(f"  Signing in as [bold]{email}[/bold] using stored credentials…")
+            console.print("  [dim]Pass --email to sign in with a different account.[/dim]")
         else:
-            password = click.prompt("Password", hide_input=True)
+            # Partially missing — prompt for what we need
+            email = click.prompt("Email", default=saved_email) if saved_email else click.prompt("Email")
+            if saved_password and (saved_email is None or saved_email == email):
+                password = saved_password
+                console.print("  [dim]Using stored password.[/dim]")
+            else:
+                password = click.prompt("Password", hide_input=True)
+    else:
+        # At least one flag was passed explicitly
+        if not email:
+            email = click.prompt("Email", default=saved_email) if saved_email else click.prompt("Email")
+        else:
+            console.print(f"  Signing in as [bold]{email}[/bold]…")
+        if not password:
+            if saved_password and (saved_email is None or saved_email == email):
+                password = saved_password
+                console.print("  [dim]Using stored password.[/dim]")
+            else:
+                password = click.prompt("Password", hide_input=True)
 
     try:
         do_login(email, password)
@@ -473,7 +572,8 @@ def token_cmd(access_token: str, refresh_token: str):
 
 
 @main.command()
-def whoami():
+@_OUTPUT_OPTION
+def whoami(output_format: Optional[str]):
     """Show the authenticated user's profile and quota."""
     client = _client()
     try:
@@ -481,6 +581,27 @@ def whoami():
     except DegooAPIError as e:
         _err(e)
         raise SystemExit(1)
+
+    used = int(info.get("UsedQuota") or 0)
+    total = int(info.get("TotalQuota") or 0)
+    pct = (used / total * 100) if total else 0
+
+    if _want_json(output_format):
+        console.print(
+            _json_output(
+                {
+                    "name": f"{info.get('FirstName', '')} {info.get('LastName', '')}".strip(),
+                    "email": info.get("Email"),
+                    "account_type": info.get("AccountType"),
+                    "used_bytes": used,
+                    "total_bytes": total,
+                    "free_bytes": max(0, total - used),
+                    "usage_pct": round(pct, 2),
+                    "file_size_limit_bytes": _safe_int(info.get("FileSizeLimit")),
+                }
+            )
+        )
+        return
 
     table = Table(title="Degoo Account", box=box.ROUNDED)
     table.add_column("Field", style="cyan")
@@ -491,10 +612,6 @@ def whoami():
     table.add_row("Account Type", str(info.get("AccountType", "—")))
     table.add_row("Used", _humanize_size(info.get("UsedQuota")))
     table.add_row("Total", _humanize_size(info.get("TotalQuota")))
-
-    used = int(info.get("UsedQuota", 0))
-    total = int(info.get("TotalQuota", 1))
-    pct = (used / total * 100) if total else 0
     table.add_row("Usage", f"{pct:.1f}%")
     table.add_row("File Size Limit", _humanize_size(info.get("FileSizeLimit")))
 
@@ -502,7 +619,8 @@ def whoami():
 
 
 @main.command()
-def quota():
+@_OUTPUT_OPTION
+def quota(output_format: Optional[str]):
     """Show storage quota usage."""
     client = _client()
     try:
@@ -510,13 +628,26 @@ def quota():
     except DegooAPIError as e:
         _err(e)
         raise SystemExit(1)
-    used = int(info.get("UsedQuota", 0))
-    total = int(info.get("TotalQuota", 1))
+    used = int(info.get("UsedQuota") or 0)
+    total = int(info.get("TotalQuota") or 0)
     pct = (used / total * 100) if total else 0
+
+    if _want_json(output_format):
+        console.print(
+            _json_output(
+                {
+                    "used_bytes": used,
+                    "total_bytes": total,
+                    "free_bytes": max(0, total - used),
+                    "usage_pct": round(pct, 2),
+                }
+            )
+        )
+        return
 
     console.print(f"  Used:  {_humanize_size(used)}")
     console.print(f"  Total: {_humanize_size(total)}")
-    console.print(f"  Free:  {_humanize_size(total - used)}")
+    console.print(f"  Free:  {_humanize_size(max(0, total - used))}")
     console.print(f"  Usage: {pct:.1f}%")
 
 
@@ -609,7 +740,17 @@ def cd(path: str):
     help="Show subtree up to this many levels deep (0 = flat list)",
 )
 @click.option("-n", "--limit", default=100, help="Max items per directory")
-def ls(path: Optional[str], long: bool, sort_by: Optional[str], reverse: bool, recursive: bool, depth: int, limit: int):
+@_OUTPUT_OPTION
+def ls(
+    path: Optional[str],
+    long: bool,
+    sort_by: Optional[str],
+    reverse: bool,
+    recursive: bool,
+    depth: int,
+    limit: int,
+    output_format: Optional[str],
+):
     """List files and folders.
 
     If PATH is omitted the current working directory is used (see 'cligoo cd').
@@ -653,22 +794,30 @@ def ls(path: Optional[str], long: bool, sort_by: Optional[str], reverse: bool, r
             raise SystemExit(1)
         if item.get("URL"):
             # Item has a download URL — it's a real file, not a directory.
+            if _want_json(output_format):
+                console.print(_json_output(_item_json(item)))
+                return
             _print_item_detail(item)
             return
         parent_id = str(item["ID"])
         display_path = "/" + path.strip("/")
 
-    console.print(f"[dim]{display_path}[/dim]")
+    # ── Effective depth (--recursive overrides depth default of 0) ───────────
+    effective_depth = 99 if (recursive and depth == 0) else depth
+
+    # JSON + recursive: walk the tree directly; skip the flat list_dir call
+    if _want_json(output_format) and effective_depth > 0:
+        all_items, incomplete = _collect_tree_flat(client, parent_id, display_path, effective_depth, 0, limit)
+        console.print(
+            _json_output({"path": display_path, "items": all_items, "count": len(all_items), "incomplete": incomplete})
+        )
+        return
 
     try:
         items = client.list_dir(parent_id, limit=limit)
     except DegooAPIError as e:
         _err(e)
         raise SystemExit(1)
-
-    if not items:
-        console.print("[dim]  (empty)[/dim]")
-        return
 
     # ── Sorting ──────────────────────────────────────────────────────────────
     if sort_by == "size":
@@ -679,8 +828,28 @@ def ls(path: Optional[str], long: bool, sort_by: Optional[str], reverse: bool, r
         # Default: alphabetical by name
         items.sort(key=lambda x: (x.get("Name") or "").lower(), reverse=reverse)
 
-    # ── Effective depth (--recursive overrides depth default of 0) ───────────
-    effective_depth = 99 if (recursive and depth == 0) else depth
+    if _want_json(output_format):
+        # flat JSON (no depth): use sorted items
+        flat = [_item_json(it) for it in items]
+        console.print(
+            _json_output(
+                {
+                    "path": display_path,
+                    "items": flat,
+                    "count": len(flat),
+                    # Heuristic: if we got exactly `limit` items the listing
+                    # may be truncated (use --limit N to raise the cap).
+                    "incomplete": len(items) >= limit,
+                }
+            )
+        )
+        return
+
+    console.print(f"[dim]{display_path}[/dim]")
+
+    if not items:
+        console.print("[dim]  (empty)[/dim]")
+        return
 
     if effective_depth > 0:
         # Tree mode integrated into ls
@@ -727,7 +896,8 @@ def ls(path: Optional[str], long: bool, sort_by: Optional[str], reverse: bool, r
 @click.argument("path", default=None, required=False)
 @click.option("-d", "--depth", default=2, help="Max depth to traverse")
 @click.option("-n", "--limit", default=200, help="Max items per directory")
-def tree(path: Optional[str], depth: int, limit: int):
+@_OUTPUT_OPTION
+def tree(path: Optional[str], depth: int, limit: int, output_format: Optional[str]):
     """Show a recursive tree view of files and folders.
 
     If PATH is omitted the current working directory is used.
@@ -747,6 +917,16 @@ def tree(path: Optional[str], depth: int, limit: int):
             raise SystemExit(1)
         parent_id = str(item["ID"])
         root_name = item.get("Name", path)
+
+    if _want_json(output_format):
+        # Use the full requested path as prefix so item paths are absolute
+        # (e.g. /Web/Photos/img.jpg not /Photos/img.jpg).
+        root_path = "/" if (path is None or path in ("/", "0")) else "/" + path.strip("/")
+        items_flat, incomplete = _collect_tree_flat(client, parent_id, root_path, depth, 0, limit)
+        console.print(
+            _json_output({"root": root_name, "items": items_flat, "count": len(items_flat), "incomplete": incomplete})
+        )
+        return
 
     rich_tree = RichTree(f"📁 [bold]{root_name}[/bold]")
     _build_tree(client, rich_tree, parent_id, depth, current_depth=0, long=False, limit=limit)
@@ -802,6 +982,7 @@ def _build_tree(
 
 # ── Info ──────────────────────────────────────────────────────────────────────
 
+
 def _compute_folder_size(client: "DegooClient", folder_id: str) -> tuple[int, int, int, bool]:
     """Recursively walk *folder_id* and return ``(total_bytes, file_count, folder_count, has_errors)``.
 
@@ -828,10 +1009,7 @@ def _compute_folder_size(client: "DegooClient", folder_id: str) -> tuple[int, in
                         queue.append(child_id)
                 else:
                     file_count += 1
-                    try:
-                        total_bytes += int(child.get("Size") or 0)
-                    except (ValueError, TypeError):
-                        pass
+                    total_bytes += _safe_int(child.get("Size"))
         except DegooAPIError:
             has_errors = True
             continue
@@ -846,7 +1024,8 @@ def _compute_folder_size(client: "DegooClient", folder_id: str) -> tuple[int, in
     default=False,
     help="Skip recursive content-size calculation for folders (fast for large trees).",
 )
-def info(item_path: str, no_size: bool):
+@_OUTPUT_OPTION
+def info(item_path: str, no_size: bool, output_format: Optional[str]):
     """Show detailed metadata for an item (path or numeric ID).
 
     \b
@@ -872,6 +1051,21 @@ def info(item_path: str, no_size: bool):
                 _err(f"Could not calculate folder size: {exc}")
             except Exception as exc:
                 _err(f"Unexpected error calculating folder size: {exc}")
+
+    if _want_json(output_format):
+        data = _item_json(item)
+        if folder_stats is not None:
+            total_bytes, file_count, folder_count, incomplete = folder_stats
+            data["folder_stats"] = {
+                "total_bytes": total_bytes,
+                "files": file_count,
+                "subfolders": folder_count,
+                "incomplete": incomplete,
+            }
+        elif no_size and item.get("Category", 0) in FOLDER_CATEGORIES:
+            data["folder_stats"] = None  # explicitly skipped
+        console.print(_json_output(data))
+        return
 
     _print_item_detail(item, folder_stats=folder_stats, size_skipped=no_size)
 
@@ -916,6 +1110,8 @@ def _print_item_detail(
             if val is not None:
                 if "Time" in key:
                     table.add_row(label, _format_time(val))
+                elif key in ("URL", "ThumbnailURL") and val:
+                    table.add_row(label, f"[link={val}]{val}[/link]")
                 else:
                     table.add_row(label, str(val))
 
@@ -941,7 +1137,8 @@ def _print_item_detail(
 @main.command()
 @click.argument("term")
 @click.option("-n", "--limit", default=50, help="Max results")
-def search(term: str, limit: int):
+@_OUTPUT_OPTION
+def search(term: str, limit: int, output_format: Optional[str]):
     """Search for files by name or content."""
     client = _client()
     try:
@@ -951,7 +1148,14 @@ def search(term: str, limit: int):
         raise SystemExit(1)
 
     if not items:
+        if _want_json(output_format):
+            console.print(_json_output({"term": term, "items": [], "count": 0}))
+            return
         console.print("[dim]  No results found.[/dim]")
+        return
+
+    if _want_json(output_format):
+        console.print(_json_output({"term": term, "items": [_item_json(it) for it in items], "count": len(items)}))
         return
 
     table = Table(title=f"Search: {term}", box=box.SIMPLE_HEAVY)
@@ -977,7 +1181,8 @@ def search(term: str, limit: int):
 # ── Create folder ─────────────────────────────────────────────────────────────
 @main.command()
 @click.argument("path")
-def mkdir(path: str):
+@_OUTPUT_OPTION
+def mkdir(path: str, output_format: Optional[str]):
     """Create a new folder.
 
     PATH can be an absolute path (/Device/NewFolder) or just a name,
@@ -1013,13 +1218,17 @@ def mkdir(path: str):
     folder_name = parts[-1]
     try:
         client.mkdir(folder_name, parent_id)
-        console.print(f"[green]✓[/green] Created folder: {folder_name}")
+        if _want_json(output_format):
+            console.print(_json_output({"ok": True, "name": folder_name, "path": path}))
+        else:
+            console.print(f"[green]✓[/green] Created folder: {folder_name}")
     except DegooAPIError as e:
         _err(e)
         raise SystemExit(1)
 
 
 # ── Transfer helpers ──────────────────────────────────────────────────────────
+
 
 def _resolve_parent_id(client: "DegooClient", parent_path: Optional[str]) -> str:
     """Return the Degoo folder ID for *parent_path* (or the saved cwd)."""
@@ -1053,8 +1262,12 @@ def _transfer_summary(ok: int, skipped: int = 0, failed: int = 0, action: str = 
     return ", ".join(parts) if parts else f"0 {action}"
 
 
-def _make_progress() -> Any:
-    """Create a shared Rich Progress display for file transfers."""
+def _make_progress(progress_console: Any = None) -> Any:
+    """Create a shared Rich Progress display for file transfers.
+
+    Pass *progress_console* = ``err_console`` when JSON output is active so
+    the progress bar is written to stderr and stdout stays clean JSON.
+    """
     from rich.progress import (
         BarColumn,
         DownloadColumn,
@@ -1074,10 +1287,12 @@ def _make_progress() -> Any:
         DownloadColumn(),
         TransferSpeedColumn(),
         TimeRemainingColumn(),
+        console=progress_console,
     )
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────
+
 
 def _upload_one(
     client: "DegooClient",
@@ -1109,7 +1324,7 @@ def _upload_one(
                 last[0] = uploaded
 
     try:
-        client.upload(filepath, parent_id, name=name, progress_callback=cb)
+        client.upload(filepath, parent_id, name=name, progress_callback=cb, upload_retries=get_upload_retries())
         # Ensure per-file bar and overall both reach 100 %
         remaining = file_size - last[0]
         progress.update(task_id, completed=file_size)
@@ -1142,6 +1357,7 @@ def _collect_upload_tasks(
     exclude: tuple[str, ...] = (),
     *,
     _cat2_resolver: "Optional[Any]" = None,
+    _log_console: "Any" = None,
 ) -> list[tuple[Path, str]]:
     """Recursively create remote dirs and return ``[(local_file, remote_parent_id)]``.
 
@@ -1169,12 +1385,12 @@ def _collect_upload_tasks(
     mkdir_result: str = "OK"
     try:
         mkdir_result = client.mkdir(local_dir.name, parent_id)
-        console.print(f"  [blue]mkdir[/blue] {local_dir.name}")
+        (_log_console or console).print(f"  [blue]mkdir[/blue] {local_dir.name}")
     except DegooAPIError as e:
         msg = str(e).lower()
         if "invalid input" in msg or "already exist" in msg:
             folder_existed = True
-            console.print(f"  [dim]mkdir[/dim] {local_dir.name} [dim](already exists)[/dim]")
+            (_log_console or console).print(f"  [dim]mkdir[/dim] {local_dir.name} [dim](already exists)[/dim]")
         else:
             raise RuntimeError(f"mkdir {local_dir.name}: {e}") from e
 
@@ -1229,13 +1445,17 @@ def _collect_upload_tasks(
     tasks: list[tuple[Path, str]] = []
     for entry in sorted(_os.scandir(local_dir), key=lambda e: (e.is_dir(), e.name)):
         if exclude and any(fnmatch.fnmatch(entry.name, pat) for pat in exclude):
-            console.print(f"  [dim]skip[/dim] {entry.name}")
+            (_log_console or console).print(f"  [dim]skip[/dim] {entry.name}")
             continue
         if entry.is_dir(follow_symlinks=False):
             tasks.extend(
                 _collect_upload_tasks(
-                    client, Path(entry.path), new_id, exclude,
+                    client,
+                    Path(entry.path),
+                    new_id,
+                    exclude,
                     _cat2_resolver=_child_resolver,
+                    _log_console=_log_console,
                 )
             )
             # After the child mkdir triggered Cat=2 creation, refresh new_id
@@ -1260,6 +1480,7 @@ def _collect_upload_tasks(
     help="Exclude files matching PATTERN, e.g. '*.tmp' (repeatable)",
 )
 @click.option("--workers", default=None, type=int, help="Concurrent workers (overrides config)")
+@_OUTPUT_OPTION
 def upload(
     files: tuple[str, ...],
     dest: Optional[str],
@@ -1267,6 +1488,7 @@ def upload(
     recursive: bool,
     exclude: tuple[str, ...],
     workers: Optional[int],
+    output_format: Optional[str],
 ) -> None:
     """Upload one or more local files (or directories with -r) to Degoo.
 
@@ -1305,7 +1527,13 @@ def upload(
                 _err(f"{p} is a directory — use -r / --recursive to upload it")
                 raise SystemExit(1)
             try:
-                sub = _collect_upload_tasks(client, p, parent_id, exclude)
+                sub = _collect_upload_tasks(
+                    client,
+                    p,
+                    parent_id,
+                    exclude,
+                    _log_console=err_console if _want_json(output_format) else None,
+                )
             except RuntimeError as e:
                 _err(str(e))
                 raise SystemExit(1)
@@ -1314,7 +1542,10 @@ def upload(
             all_tasks.append((p, parent_id, name if len(files) == 1 else None))
 
     if not all_tasks:
-        console.print("[yellow]⚠[/yellow]  No files to upload.")
+        if _want_json(output_format):
+            console.print(_json_output({"uploaded": 0, "skipped": 0, "failed": 0, "errors": []}))
+        else:
+            console.print("[yellow]⚠[/yellow]  No files to upload.")
         return
 
     ok = failed = skipped = 0
@@ -1322,7 +1553,7 @@ def upload(
 
     total_bytes = sum(fp.stat().st_size for fp, _, _ in all_tasks)
 
-    with _make_progress() as progress:
+    with _make_progress(progress_console=err_console if _want_json(output_format) else None) as progress:
         overall = progress.add_task(
             f"[bold]Total ({len(all_tasks)} file(s))[/bold]",
             total=total_bytes,
@@ -1352,6 +1583,12 @@ def upload(
         for msg in errors:
             err_console.print(f"  [red]✗[/red] {_esc(msg)}")
 
+    if _want_json(output_format):
+        console.print(_json_output({"uploaded": ok, "skipped": skipped, "failed": failed, "errors": errors}))
+        if failed:
+            raise SystemExit(1)
+        return
+
     summary = _transfer_summary(ok, skipped, failed)
 
     if failed:
@@ -1364,6 +1601,7 @@ def upload(
 
 
 # ── Download ──────────────────────────────────────────────────────────────────
+
 
 def _download_one(
     client: "DegooClient",
@@ -1420,14 +1658,17 @@ def _collect_download_tasks(
     folder_name: str,
     local_dest: Path,
     skip_existing: bool = False,
+    _log_console: "Any" = None,
 ) -> list[tuple[str, str, Path, int]]:
     """Recursively create local dirs and return ``[(item_id, item_name, local_dest_dir, size)]``.
 
     If *skip_existing* is True, files already present on disk are omitted.
+    Pass *_log_console* = ``err_console`` to keep mkdir/skip logs off stdout in
+    JSON mode.
     """
     local_folder = local_dest / folder_name
     local_folder.mkdir(parents=True, exist_ok=True)
-    console.print(f"  [blue]mkdir[/blue] {local_folder}")
+    (_log_console or console).print(f"  [blue]mkdir[/blue] {local_folder}")
 
     tasks: list[tuple[str, str, Path, int]] = []
     try:
@@ -1440,12 +1681,17 @@ def _collect_download_tasks(
         if client.is_folder(item):
             tasks.extend(
                 _collect_download_tasks(
-                    client, str(item["ID"]), item["Name"], local_folder, skip_existing
+                    client,
+                    str(item["ID"]),
+                    item["Name"],
+                    local_folder,
+                    skip_existing,
+                    _log_console=_log_console,
                 )
             )
         else:
             if skip_existing and (local_folder / item["Name"]).exists():
-                console.print(f"  [dim]skip[/dim] {item['Name']} (already exists)")
+                (_log_console or console).print(f"  [dim]skip[/dim] {item['Name']} (already exists)")
                 continue
             size = int(item.get("Size") or 0)
             tasks.append((str(item["ID"]), item["Name"], local_folder, size))
@@ -1454,14 +1700,13 @@ def _collect_download_tasks(
 
 @main.command()
 @click.argument("items", nargs=-1, required=True)
-@click.option(
-    "--dest", "-t", default=".", type=click.Path(), help="Local destination directory (default: .)"
-)
+@click.option("--dest", "-t", default=".", type=click.Path(), help="Local destination directory (default: .)")
 @click.option("--name", help="Override the downloaded filename (single file only)")
 @click.option("-r", "--recursive", is_flag=True, help="Download a folder recursively")
 @click.option("--skip-existing", is_flag=True, help="Skip files already present locally")
 @click.option("--overwrite", is_flag=True, help="Overwrite existing local files (default: save as numbered copy)")
 @click.option("--workers", default=None, type=int, help="Concurrent workers (overrides config)")
+@_OUTPUT_OPTION
 def download(
     items: tuple[str, ...],
     dest: str,
@@ -1470,6 +1715,7 @@ def download(
     skip_existing: bool,
     overwrite: bool,
     workers: Optional[int],
+    output_format: Optional[str],
 ) -> None:
     """Download one or more files or folders from Degoo (path or numeric ID).
 
@@ -1513,7 +1759,12 @@ def download(
                 _err(f"{item_arg} is a folder — use -r / --recursive to download it")
                 raise SystemExit(1)
             sub = _collect_download_tasks(
-                client, item_id, item["Name"], dest_path, skip_existing
+                client,
+                item_id,
+                item["Name"],
+                dest_path,
+                skip_existing,
+                _log_console=err_console if _want_json(output_format) else None,
             )
             all_tasks.extend((iid, iname, idest, None, sz) for iid, iname, idest, sz in sub)
         else:
@@ -1522,7 +1773,10 @@ def download(
             all_tasks.append((item_id, item["Name"], dest_path, fname, size))
 
     if not all_tasks:
-        console.print("[yellow]⚠[/yellow]  No files to download.")
+        if _want_json(output_format):
+            console.print(_json_output({"downloaded": 0, "failed": 0, "errors": []}))
+        else:
+            console.print("[yellow]⚠[/yellow]  No files to download.")
         return
 
     ok = failed = 0
@@ -1530,7 +1784,7 @@ def download(
 
     total_bytes = sum(sz for _, _, _, _, sz in all_tasks)
 
-    with _make_progress() as progress:
+    with _make_progress(progress_console=err_console if _want_json(output_format) else None) as progress:
         overall = progress.add_task(
             f"[bold]Total ({len(all_tasks)} file(s))[/bold]",
             total=total_bytes or len(all_tasks),
@@ -1541,8 +1795,16 @@ def download(
 
         def _do_download(args: tuple[str, str, Path, Optional[str], int]) -> None:
             iid, iname, idest, fname, _sz = args
-            _download_one(client, iid, iname, idest, progress, name_override=fname,
-                          overall_advance=_advance_overall, overwrite=overwrite)
+            _download_one(
+                client,
+                iid,
+                iname,
+                idest,
+                progress,
+                name_override=fname,
+                overall_advance=_advance_overall,
+                overwrite=overwrite,
+            )
 
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = {executor.submit(_do_download, task): task for task in all_tasks}
@@ -1558,6 +1820,13 @@ def download(
     if errors:
         for msg in errors:
             err_console.print(f"  [red]✗[/red] {_esc(msg)}")
+
+    if _want_json(output_format):
+        console.print(_json_output({"downloaded": ok, "failed": failed, "errors": errors}))
+        if failed:
+            raise SystemExit(1)
+        return
+
     if failed:
         console.print(f"[yellow]⚠[/yellow]  {_transfer_summary(ok, failed=failed, action='downloaded')}")
         raise SystemExit(1)
@@ -1597,7 +1866,8 @@ def _resolve_id(client: "DegooClient", path_or_id: str) -> str:
 @main.command()
 @click.argument("src")
 @click.argument("dest")
-def mv(src: str, dest: str) -> None:
+@_OUTPUT_OPTION
+def mv(src: str, dest: str, output_format: Optional[str]) -> None:
     """Move or rename SRC to DEST.
 
     \b
@@ -1637,12 +1907,12 @@ def mv(src: str, dest: str) -> None:
                     _err(f"{dest_stripped} is not a folder")
                     raise SystemExit(1)
                 client.move([src_id], str(dest_item["ID"]))
-                console.print(f"[green]✓[/green] Moved {src} → {dest_stripped}/{src_item['Name']}")
+                if _want_json(output_format):
+                    console.print(_json_output({"ok": True, "src": src, "dest": dest_stripped}))
+                else:
+                    console.print(f"[green]✓[/green] Moved {src} → {dest_stripped}/{src_item['Name']}")
             else:
-                _err(
-                    f"{dest_stripped} already exists — "
-                    f"append '/' to move inside it, or choose a different name"
-                )
+                _err(f"{dest_stripped} already exists — append '/' to move inside it, or choose a different name")
                 raise SystemExit(1)
             return
 
@@ -1671,7 +1941,10 @@ def mv(src: str, dest: str) -> None:
         if dest_parent_id != src_parent_id:
             client.move([src_id], dest_parent_id)
         client.rename(src_id, new_name)
-        console.print(f"[green]✓[/green] Moved {src} → {dest_stripped}")
+        if _want_json(output_format):
+            console.print(_json_output({"ok": True, "src": src, "dest": dest_stripped}))
+        else:
+            console.print(f"[green]✓[/green] Moved {src} → {dest_stripped}")
 
     except DegooAPIError as e:
         _err(e)
@@ -1681,7 +1954,8 @@ def mv(src: str, dest: str) -> None:
 @main.command()
 @click.argument("src")
 @click.argument("dest_folder")
-def cp(src: str, dest_folder: str):
+@_OUTPUT_OPTION
+def cp(src: str, dest_folder: str, output_format: Optional[str]):
     """Copy SRC into DEST_FOLDER (DEST_FOLDER must already exist).
 
     Same placement semantics as mv — SRC is placed inside DEST_FOLDER.
@@ -1691,7 +1965,10 @@ def cp(src: str, dest_folder: str):
         src_id = _resolve_id(client, src)
         dest_id = _resolve_id(client, dest_folder)
         client.move([src_id], dest_id, copy=True)
-        console.print(f"[green]✓[/green] Copied {src} → {dest_folder}")
+        if _want_json(output_format):
+            console.print(_json_output({"ok": True, "src": src, "dest": dest_folder}))
+        else:
+            console.print(f"[green]✓[/green] Copied {src} → {dest_folder}")
     except DegooAPIError as e:
         _err(e)
         raise SystemExit(1)
@@ -1701,13 +1978,17 @@ def cp(src: str, dest_folder: str):
 @main.command()
 @click.argument("src")
 @click.argument("new_name")
-def rename(src: str, new_name: str):
+@_OUTPUT_OPTION
+def rename(src: str, new_name: str, output_format: Optional[str]):
     """Rename SRC to NEW_NAME (path or numeric ID)."""
     client = _client()
     try:
         src_id = _resolve_id(client, src)
         client.rename(src_id, new_name)
-        console.print(f"[green]✓[/green] Renamed {src} → {new_name}")
+        if _want_json(output_format):
+            console.print(_json_output({"ok": True, "src": src, "new_name": new_name}))
+        else:
+            console.print(f"[green]✓[/green] Renamed {src} → {new_name}")
     except DegooAPIError as e:
         _err(e)
         raise SystemExit(1)
@@ -1718,7 +1999,8 @@ def rename(src: str, new_name: str):
 @click.argument("items", nargs=-1, required=True)
 @click.option("--permanent", is_flag=True, help="Permanently delete (skip recycle bin)")
 @click.option("-r", "--recursive", is_flag=True, help="Allow deleting directories and their contents")
-def rm(items: tuple[str, ...], permanent: bool, recursive: bool):
+@_OUTPUT_OPTION
+def rm(items: tuple[str, ...], permanent: bool, recursive: bool, output_format: Optional[str]):
     """Delete items — moves to recycle bin by default.
 
     ITEMS can be paths (/Web/foo) or numeric IDs.
@@ -1743,8 +2025,11 @@ def rm(items: tuple[str, ...], permanent: bool, recursive: bool):
         raise SystemExit(1)
     try:
         client.delete(ids, permanent=permanent)
-        action = "Permanently deleted" if permanent else "Moved to recycle bin"
-        console.print(f"[green]✓[/green] {action}: {', '.join(items)}")
+        if _want_json(output_format):
+            console.print(_json_output({"ok": True, "deleted": list(items), "permanent": permanent}))
+        else:
+            action = "Permanently deleted" if permanent else "Moved to recycle bin"
+            console.print(f"[green]✓[/green] {action}: {', '.join(items)}")
     except DegooAPIError as e:
         _err(e)
         raise SystemExit(1)
@@ -1753,7 +2038,8 @@ def rm(items: tuple[str, ...], permanent: bool, recursive: bool):
 # ── Trash ─────────────────────────────────────────────────────────────────────
 @main.command()
 @click.option("-n", "--limit", default=50, help="Max items")
-def trash(limit: int):
+@_OUTPUT_OPTION
+def trash(limit: int, output_format: Optional[str]):
     """List items in the recycle bin."""
     client = _client()
     try:
@@ -1763,7 +2049,24 @@ def trash(limit: int):
         raise SystemExit(1)
 
     if not items:
+        if _want_json(output_format):
+            console.print(_json_output({"items": [], "count": 0, "total_bytes": 0}))
+            return
         console.print("[dim]  Recycle bin is empty.[/dim]")
+        return
+
+    total_bytes = sum(int(it.get("Size") or 0) for it in items)
+
+    if _want_json(output_format):
+        console.print(
+            _json_output(
+                {
+                    "items": [_item_json(it) for it in items],
+                    "count": len(items),
+                    "total_bytes": total_bytes,
+                }
+            )
+        )
         return
 
     table = Table(title="🗑️  Recycle Bin", box=box.SIMPLE_HEAVY)
@@ -1772,7 +2075,6 @@ def trash(limit: int):
     table.add_column("Name")
     table.add_column("Size", justify="right")
 
-    total_bytes = sum(int(it.get("Size") or 0) for it in items)
     for it in items:
         cat = it.get("Category", 0)
         table.add_row(
@@ -1783,9 +2085,7 @@ def trash(limit: int):
         )
     console.print(table)
     total_human = _humanize_size(str(total_bytes)) if total_bytes else "unknown size"
-    console.print(
-        f"  [dim]{len(items)} item{'s' if len(items) != 1 else ''} · {total_human} total[/dim]"
-    )
+    console.print(f"  [dim]{len(items)} item{'s' if len(items) != 1 else ''} · {total_human} total[/dim]")
 
 
 @main.command("empty-trash")
@@ -1864,7 +2164,8 @@ def empty_trash(yes: bool) -> None:
 @main.command()
 @click.option("-n", "--limit", default=50, help="Max items")
 @click.option("-l", "--long", is_flag=True, help="Show who each item is shared with")
-def shared(limit: int, long: bool):
+@_OUTPUT_OPTION
+def shared(limit: int, long: bool, output_format: Optional[str]):
     """List shared items.
 
     Without -l shows a compact table.  With -l an extra 'Shared with' column
@@ -1878,7 +2179,26 @@ def shared(limit: int, long: bool):
         raise SystemExit(1)
 
     if not items:
-        console.print("[dim]  No shared items.[/dim]")
+        if _want_json(output_format):
+            console.print(_json_output({"items": [], "count": 0}))
+        else:
+            console.print("[dim]  No shared items.[/dim]")
+        return
+
+    if _want_json(output_format):
+        result_items = []
+        for it in items:
+            entry = _item_json(it)
+            if long:
+                try:
+                    perms = client.get_permissions(str(it["ID"]))
+                    users = perms.get("Users") or []
+                    entry["shared_with"] = [u.get("Email") or u.get("Name", "?") for u in users]
+                except DegooAPIError:
+                    entry["shared_with"] = None  # API error — permissions unavailable
+                    entry["shared_with_error"] = True
+            result_items.append(entry)
+        console.print(_json_output({"items": result_items, "count": len(result_items)}))
         return
 
     table = Table(title="Shared Items", box=box.SIMPLE_HEAVY)
@@ -1912,12 +2232,16 @@ def shared(limit: int, long: bool):
 @main.command()
 @click.argument("item_id")
 @click.argument("usernames", nargs=-1)
-def share(item_id: str, usernames: tuple[str, ...]):
+@_OUTPUT_OPTION
+def share(item_id: str, usernames: tuple[str, ...], output_format: Optional[str]):
     """Share an item (optionally with specific users)."""
     client = _client()
     try:
         client.share(item_id, list(usernames) if usernames else None)
-        console.print(f"[green]✓[/green] Shared item {item_id}")
+        if _want_json(output_format):
+            console.print(_json_output({"ok": True, "item_id": item_id}))
+        else:
+            console.print(f"[green]✓[/green] Shared item {item_id}")
     except DegooAPIError as e:
         _err(e)
         raise SystemExit(1)
@@ -1925,12 +2249,16 @@ def share(item_id: str, usernames: tuple[str, ...]):
 
 @main.command()
 @click.argument("item_id")
-def unshare(item_id: str):
+@_OUTPUT_OPTION
+def unshare(item_id: str, output_format: Optional[str]):
     """Remove sharing from an item."""
     client = _client()
     try:
         client.unshare(item_id)
-        console.print(f"[green]✓[/green] Unshared item {item_id}")
+        if _want_json(output_format):
+            console.print(_json_output({"ok": True, "item_id": item_id}))
+        else:
+            console.print(f"[green]✓[/green] Unshared item {item_id}")
     except DegooAPIError as e:
         _err(e)
         raise SystemExit(1)
@@ -1939,7 +2267,8 @@ def unshare(item_id: str):
 # ── Feed ──────────────────────────────────────────────────────────────────────
 @main.command()
 @click.option("-n", "--limit", default=30, help="Max items")
-def feed(limit: int):
+@_OUTPUT_OPTION
+def feed(limit: int, output_format: Optional[str]):
     """Show the moments/feed timeline."""
     client = _client()
     try:
@@ -1949,7 +2278,14 @@ def feed(limit: int):
         raise SystemExit(1)
 
     if not items:
+        if _want_json(output_format):
+            console.print(_json_output({"items": [], "count": 0}))
+            return
         console.print("[dim]  Feed is empty.[/dim]")
+        return
+
+    if _want_json(output_format):
+        console.print(_json_output({"items": [_item_json(it) for it in items], "count": len(items)}))
         return
 
     table = Table(title="📸 Feed / Moments", box=box.SIMPLE_HEAVY)

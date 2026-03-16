@@ -40,10 +40,11 @@
 - [Configuration](#configuration)
   - [`cligoo config`](#cligoo-config)
   - [Storage locations](#storage-locations)
-  - [`config.json` schema](#configjson-schema)
+  - [`config.toml` schema](#configtoml-schema)
 - [Interactive Shell](#interactive-shell)
   - [`cligoo shell`](#cligoo-shell)
 - [Exit Codes](#exit-codes)
+- [JSON Output](#json-output)
 - [Global Options](#global-options)
 
 ---
@@ -124,6 +125,7 @@ Shows name, email, account type, storage usage, and per-file size limit.
 
 ```bash
 cligoo whoami
+cligoo whoami --output json
 ```
 
 ### `cligoo quota`
@@ -132,6 +134,7 @@ Compact storage summary: used, total, free, and usage percentage.
 
 ```bash
 cligoo quota
+cligoo quota --output json
 ```
 
 ---
@@ -159,6 +162,7 @@ cligoo ls -d 3 /Web
 | `-R`, `--recursive` | List all levels (equivalent to `-d 99`) |
 | `-d N`, `--depth N` | Show subtree up to N levels deep |
 | `-n N`, `--limit N` | Max items per directory (default 100) |
+| `-o`, `--output` | Output format: `table` (default) or `json` |
 
 ### `cligoo ll [PATH]`
 
@@ -178,6 +182,7 @@ cligoo tree /Web/Photos -n 50
 | --- | --- |
 | `-d N`, `--depth N` | Max depth (default 2) |
 | `-n N`, `--limit N` | Max items per directory (default 200) |
+| `-o`, `--output` | Output format: `table` (default) or `json` (flat list with full paths) |
 
 ### `cligoo info <PATH|ID>`
 
@@ -204,6 +209,14 @@ run `cligoo info holiday.jpg` without typing the full path.
 The **ID** field in the output can be used with any command that accepts a
 numeric ID (e.g. `cligoo download 123456789 .`).
 
+For folders, `info` walks the full tree to report total **Content Size**, **Files**, and **Sub-folders**.
+Pass `--no-size` to skip the walk for very large trees.
+
+| Flag | Description |
+| --- | --- |
+| `--no-size` | Skip recursive content-size calculation (fast for large folders) |
+| `-o`, `--output` | Output format: `table` (default) or `json` |
+
 ### `cligoo search <TERM>`
 
 Search for items by name across the whole account.
@@ -211,11 +224,13 @@ Search for items by name across the whole account.
 ```bash
 cligoo search "vacation photos"
 cligoo search "report.pdf" -n 10
+cligoo search GoPro --output json
 ```
 
 | Flag | Description |
 | --- | --- |
 | `-n N`, `--limit N` | Maximum results to return |
+| `-o`, `--output` | Output format: `table` (default) or `json` |
 
 ### `cligoo cd [PATH]`
 
@@ -288,7 +303,7 @@ cligoo upload bigfile.iso -t /Web/Backups --workers 4
 | `--name NAME` | Override the remote filename — single file only |
 | `-r`, `--recursive` | Required when any source is a directory; walks the tree and uploads each file |
 | `--exclude PATTERN` | Exclude files matching a glob pattern (repeatable, e.g. `--exclude "*.tmp"`) |
-| `--workers N` | Number of concurrent upload threads for this invocation (overrides `config.json`) |
+| `--workers N` | Number of concurrent upload threads for this invocation (overrides `config.toml`) |
 
 #### Upload summary and exit codes
 
@@ -382,7 +397,7 @@ cligoo download /Web/BigFolder -t . -r --workers 8
 | `--name NAME` | Override the local filename — single file only |
 | `-r`, `--recursive` | Required when any item is a folder; walks the Degoo tree and downloads each file |
 | `--skip-existing` | Skip files whose local path already exists — useful to resume interrupted downloads |
-| `--workers N` | Number of concurrent download threads for this invocation (overrides `config.json`) |
+| `--workers N` | Number of concurrent download threads for this invocation (overrides `config.toml`) |
 
 #### Folder detection
 
@@ -611,7 +626,7 @@ The wizard covers two sections:
 2) Password  (degoo login — email + password)
 ```
 
-Sets `login_method` in `config.json`. Bare `cligoo login` uses this choice
+Sets `login_method` in `config.toml`. Bare `cligoo login` uses this choice
 automatically.
 
 #### 2. Chrome profile (shown when browser method is selected)
@@ -622,7 +637,7 @@ automatically.
 2)  Work     (user@company.com)
 ```
 
-Sets `chrome_profile` in `config.json`. When set, `cligoo login --browser`
+Sets `chrome_profile` in `config.toml`. When set, `cligoo login --browser`
 copies that profile's cookies into a temporary browser so existing Google and
 Degoo sessions carry over automatically.
 
@@ -630,29 +645,75 @@ Degoo sessions carry over automatically.
 
 | What | Where |
 | --- | --- |
-| User preferences | `~/.config/cligoo/config.json` |
+| User preferences | `~/.config/cligoo/config.toml` |
 | Auth tokens (primary) | macOS Keychain / GNOME Keyring / Windows Credential Manager |
 | Auth tokens (fallback) | `~/.config/cligoo/tokens.json` |
 | Credentials (fallback) | `~/.config/cligoo/credentials.json` |
 | Working directory | `~/.config/cligoo/cwd.json` |
 
-### `config.json` schema
+> **Legacy:** `config.json` (flat JSON) is still read as a fallback when `config.toml`
+> does not exist. Migrate by running `cligoo config` once — it writes a fresh
+> `config.toml` and the JSON file is then ignored.
 
-```json
-{
-  "login_method": "browser",
-  "chrome_profile": "Default",
-  "api_key": "da2-vs6twz5vnjdavpqndtbzg3prra",
-  "transfer_workers": 20
-}
+### `config.toml` schema
+
+```toml
+[api]
+graphql_url   = ""                            # GraphQL endpoint override (leave blank for default)
+api_key       = "da2-vs6twz5vnjdavpqndtbzg3prra"  # AppSync key override (env DEGOO_API_KEY takes precedence)
+timeout       = 60                            # HTTP timeout in seconds
+debug         = false                         # Verbose HTTP request/response logging
+
+[session]
+login_method       = "password"               # "password" | "browser"
+chrome_profile     = "Default"               # Chrome profile dir for --browser login
+transfer_workers   = 20                       # Concurrent upload/download threads
+auto_relogin       = true                     # Re-authenticate silently when token expires
+default_upload_dir = "/Web"                   # Default remote destination for uploads
+upload_retries     = 5                        # GCS upload retry attempts on transient errors
+
+[output]
+format       = "table"                        # "table" | "json"  (default output format)
+compact_json = false                          # true = single-line JSON; false = pretty-printed
+
+[advanced]
+standalone_nav = false                        # Allow cd/pwd outside the shell (disabled by default)
 ```
 
-| Key | Values | Meaning |
+#### Key reference
+
+**`[api]` section**
+
+| Key | Default | Meaning |
 | --- | --- | --- |
-| `login_method` | `"browser"` \| `"password"` \| `null` | Method used by bare `cligoo login`. `null` = prompt each time |
-| `chrome_profile` | `"Default"` \| `"Profile 1"` \| … \| `null` | Chrome profile to seed for `--browser` login. `null` = fresh temporary profile |
-| `api_key` | `"da2-…"` \| `null` | AWS AppSync client key override. Only needed if Degoo rotates the key. The `DEGOO_API_KEY` environment variable takes precedence |
-| `transfer_workers` | integer ≥ 1 (default `20`) | Concurrent threads used for parallel upload/download. Override per-command with `--workers N` |
+| `graphql_url` | *(built-in)* | Override the GraphQL endpoint |
+| `api_key` | *(built-in)* | AppSync client key override. `DEGOO_API_KEY` env var takes precedence |
+| `timeout` | `60` | HTTP timeout in seconds for all API requests |
+| `debug` | `false` | Log every request URL and response status to stderr |
+
+**`[session]` section**
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `login_method` | `null` | `"password"` or `"browser"`. `null` = prompt on each `cligoo login` |
+| `chrome_profile` | `null` | Chrome profile dir name for `--browser` login. `null` = fresh temporary profile |
+| `transfer_workers` | `20` | Concurrent threads for parallel upload/download. Override per-command with `--workers N` |
+| `auto_relogin` | `true` | Silently re-authenticate using saved credentials when the access token expires |
+| `default_upload_dir` | `"/Web"` | Default remote destination when `--dest` is omitted from `cligoo upload` |
+| `upload_retries` | `5` | Retry attempts for failed GCS uploads (network errors and 5xx). Set `0` to disable. Exponential backoff: 1 s, 2 s, 4 s … max 30 s |
+
+**`[output]` section**
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `format` | `"table"` | `"table"` or `"json"` — permanent default output format for all commands |
+| `compact_json` | `false` | `true` = single-line JSON; `false` = pretty-printed with indentation |
+
+**`[advanced]` section**
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `standalone_nav` | `false` | Enable `cligoo cd` and `cligoo pwd` as standalone commands (outside the shell). Off by default — use `cligoo shell` instead |
 
 #### Overriding the API key
 
@@ -661,13 +722,13 @@ browser's network inspector when visiting `app.degoo.com` — it is **not** a
 secret. If Degoo rotates it you can update without reinstalling:
 
 ```bash
-# Option A — environment variable (takes highest priority)
+# Option A — environment variable (takes highest priority, no file edit needed)
 export DEGOO_API_KEY=da2-newkeyhere
 
-# Option B — config file (persists across shells)
-echo '{"api_key": "da2-newkeyhere"}' | jq -s '.[0] * .[1]' \
-  ~/.config/cligoo/config.json - > /tmp/cfg.json \
-  && mv /tmp/cfg.json ~/.config/cligoo/config.json
+# Option B — config.toml (persists across shells)
+# Edit ~/.config/cligoo/config.toml and set:
+# [api]
+# api_key = "da2-newkeyhere"
 ```
 
 ---
@@ -835,6 +896,95 @@ $ cligoo shell
 
 For `upload` and `download`, skipped files (duplicates or unsupported types) do **not** cause a
 non-zero exit code.  Only unrecoverable errors do.
+
+---
+
+## JSON Output
+
+Every command that returns structured data accepts `--output json` (short: `-o json`).
+The default format (`table`) can be permanently changed in `config.toml`:
+
+```toml
+[output]
+format = "json"        # "table" or "json"
+compact_json = false   # true = single-line output
+```
+
+### Commands with JSON support
+
+| Command | JSON shape |
+| --- | --- |
+| `whoami` | `{name, email, account_type, used_bytes, total_bytes, free_bytes, usage_pct, file_size_limit_bytes}` |
+| `quota` | `{used_bytes, total_bytes, free_bytes, usage_pct}` |
+| `ls` | `{path, items: [...], count}` |
+| `tree` | `{root, items: [...], count}` — flat list with full paths |
+| `info` | item object + optional `folder_stats: {total_bytes, files, subfolders, incomplete}` |
+| `search` | `{term, items: [...], count}` |
+| `trash` | `{items: [...], count, total_bytes}` |
+| `shared` | `{items: [...], count}` |
+| `feed` | `{items: [...], count}` |
+| `mkdir` | `{ok, name, path}` |
+| `upload` | `{uploaded, skipped, failed, errors: [...]}` |
+| `download` | `{downloaded, failed, errors: [...]}` |
+| `mv` | `{ok, src, dest}` |
+| `cp` | `{ok, src, dest}` |
+| `rename` | `{ok, src, new_name}` |
+| `rm` | `{ok, deleted: [...], permanent}` |
+| `share` | `{ok, item_id}` |
+| `unshare` | `{ok, item_id}` |
+
+### Item object schema
+
+All list commands (`ls`, `tree`, `search`, `trash`, `shared`, `feed`) return items
+with a consistent structure:
+
+```json
+{
+  "id": "123456789",
+  "name": "holiday.mp4",
+  "category": 6,
+  "category_name": "Video",
+  "is_folder": false,
+  "size_bytes": 45678901,
+  "parent_id": "987654321",
+  "path": "/Web/GoPro/holiday.mp4",
+  "created": "1700000000",
+  "modified": "1700000000",
+  "uploaded": "1700000000",
+  "url": "https://c.degoo.media/...",
+  "thumbnail_url": null,
+  "in_recycle_bin": false
+}
+```
+
+### Agent usage examples
+
+```bash
+# List a folder and pipe to jq
+cligoo ls /Web/GoPro --output json | jq '.items[] | select(.is_folder == false) | .name'
+
+# Get the ID of a file by name
+cligoo search "report.pdf" --output json | jq -r '.items[0].id'
+
+# Check quota programmatically
+cligoo quota --output json | jq '{used: .used_bytes, free: .free_bytes}'
+
+# Recursive tree as a flat JSON list
+cligoo tree /Web --depth 3 --output json | jq '.items[] | select(.is_folder == false) | .path'
+
+# Upload and capture result
+result=$(cligoo upload file.pdf --output json)
+echo $result | jq '.uploaded'
+
+# Get folder size
+cligoo info /Web/GoPro --output json | jq '.folder_stats.total_bytes'
+```
+
+### Error handling in JSON mode
+
+Errors (API failures, path not found, auth errors) are always written to **stderr** as
+plain text regardless of `--output json`. The exit code is still non-zero on failure.
+This means stdout remains clean JSON for piping, while stderr carries diagnostics.
 
 ---
 

@@ -120,9 +120,7 @@ def test_load_config_falls_back_to_json(isolated_config, tmp_path):
     """When no TOML file exists, config.json is read as fallback."""
     from cligoo.config import get_login_method
 
-    (tmp_path / "config.json").write_text(
-        json.dumps({"login_method": "browser"}), encoding="utf-8"
-    )
+    (tmp_path / "config.json").write_text(json.dumps({"login_method": "browser"}), encoding="utf-8")
     assert get_login_method() == "browser"
 
 
@@ -131,9 +129,7 @@ def test_toml_wins_over_json(isolated_config, tmp_path):
     from cligoo.config import get_login_method
 
     _write_toml(tmp_path / "config.toml", '[session]\nlogin_method = "browser"\n')
-    (tmp_path / "config.json").write_text(
-        json.dumps({"login_method": "password"}), encoding="utf-8"
-    )
+    (tmp_path / "config.json").write_text(json.dumps({"login_method": "password"}), encoding="utf-8")
     assert get_login_method() == "browser"
 
 
@@ -141,9 +137,7 @@ def test_load_config_json_chrome_profile(isolated_config, tmp_path):
     """Legacy JSON chrome_profile key is read correctly via fallback."""
     from cligoo.config import get_chrome_profile
 
-    (tmp_path / "config.json").write_text(
-        json.dumps({"chrome_profile": "Profile 1"}), encoding="utf-8"
-    )
+    (tmp_path / "config.json").write_text(json.dumps({"chrome_profile": "Profile 1"}), encoding="utf-8")
     assert get_chrome_profile() == "Profile 1"
 
 
@@ -153,6 +147,7 @@ def test_load_config_json_chrome_profile(isolated_config, tmp_path):
 def test_get_api_key_from_env_var(isolated_config, monkeypatch):
     monkeypatch.setenv("DEGOO_API_KEY", "env-key-123")
     from cligoo.config import get_api_key
+
     assert get_api_key() == "env-key-123"
 
 
@@ -160,6 +155,7 @@ def test_get_api_key_from_toml(isolated_config, tmp_path, monkeypatch):
     monkeypatch.delenv("DEGOO_API_KEY", raising=False)
     _write_toml(tmp_path / "config.toml", '[api]\napi_key = "toml-key-xyz"\n')
     from cligoo.config import get_api_key
+
     assert get_api_key() == "toml-key-xyz"
 
 
@@ -167,6 +163,7 @@ def test_get_api_key_from_json_fallback(isolated_config, tmp_path, monkeypatch):
     monkeypatch.delenv("DEGOO_API_KEY", raising=False)
     (tmp_path / "config.json").write_text(json.dumps({"api_key": "json-key"}), encoding="utf-8")
     from cligoo.config import get_api_key
+
     assert get_api_key() == "json-key"
 
 
@@ -174,12 +171,14 @@ def test_get_api_key_env_overrides_config(isolated_config, tmp_path, monkeypatch
     monkeypatch.setenv("DEGOO_API_KEY", "env-wins")
     _write_toml(tmp_path / "config.toml", '[api]\napi_key = "config-loses"\n')
     from cligoo.config import get_api_key
+
     assert get_api_key() == "env-wins"
 
 
 def test_get_api_key_returns_none_when_absent(isolated_config, monkeypatch):
     monkeypatch.delenv("DEGOO_API_KEY", raising=False)
     from cligoo.config import get_api_key
+
     assert get_api_key() is None
 
 
@@ -187,6 +186,7 @@ def test_get_api_key_returns_none_for_empty_string(isolated_config, tmp_path, mo
     monkeypatch.delenv("DEGOO_API_KEY", raising=False)
     _write_toml(tmp_path / "config.toml", '[api]\napi_key = ""\n')
     from cligoo.config import get_api_key
+
     assert get_api_key() is None
 
 
@@ -196,29 +196,34 @@ def test_get_api_key_returns_none_for_empty_string(isolated_config, tmp_path, mo
 def test_get_login_method_browser_from_toml(isolated_config, tmp_path):
     _write_toml(tmp_path / "config.toml", '[session]\nlogin_method = "browser"\n')
     from cligoo.config import get_login_method
+
     assert get_login_method() == "browser"
 
 
 def test_get_login_method_password_from_toml(isolated_config, tmp_path):
     _write_toml(tmp_path / "config.toml", '[session]\nlogin_method = "password"\n')
     from cligoo.config import get_login_method
+
     assert get_login_method() == "password"
 
 
 def test_get_login_method_browser_from_json(isolated_config, tmp_path):
     (tmp_path / "config.json").write_text(json.dumps({"login_method": "browser"}), encoding="utf-8")
     from cligoo.config import get_login_method
+
     assert get_login_method() == "browser"
 
 
 def test_get_login_method_invalid_returns_none(isolated_config, tmp_path):
     _write_toml(tmp_path / "config.toml", '[session]\nlogin_method = "oauth"\n')
     from cligoo.config import get_login_method
+
     assert get_login_method() is None
 
 
 def test_get_login_method_absent_returns_none(isolated_config):
     from cligoo.config import get_login_method
+
     assert get_login_method() is None
 
 
@@ -228,11 +233,13 @@ def test_get_login_method_absent_returns_none(isolated_config):
 def test_get_chrome_profile_from_toml(isolated_config, tmp_path):
     _write_toml(tmp_path / "config.toml", '[session]\nchrome_profile = "Profile 1"\n')
     from cligoo.config import get_chrome_profile
+
     assert get_chrome_profile() == "Profile 1"
 
 
 def test_get_chrome_profile_absent_returns_none(isolated_config):
     from cligoo.config import get_chrome_profile
+
     assert get_chrome_profile() is None
 
 
@@ -241,60 +248,98 @@ def test_get_chrome_profile_absent_returns_none(isolated_config):
 
 def test_get_api_timeout_default(isolated_config):
     from cligoo.config import get_api_timeout
+
     assert get_api_timeout() == 60.0
 
 
 def test_get_api_timeout_from_toml(isolated_config, tmp_path):
     _write_toml(tmp_path / "config.toml", "[api]\ntimeout = 120\n")
     from cligoo.config import get_api_timeout
+
     assert get_api_timeout() == 120.0
 
 
 def test_get_api_debug_default(isolated_config):
     from cligoo.config import get_api_debug
+
     assert get_api_debug() is False
 
 
 def test_get_api_debug_from_toml(isolated_config, tmp_path):
     _write_toml(tmp_path / "config.toml", "[api]\ndebug = true\n")
     from cligoo.config import get_api_debug
+
     assert get_api_debug() is True
 
 
 def test_get_auto_relogin_default(isolated_config):
     from cligoo.config import get_auto_relogin
+
     assert get_auto_relogin() is True
 
 
 def test_get_auto_relogin_false_from_toml(isolated_config, tmp_path):
     _write_toml(tmp_path / "config.toml", "[session]\nauto_relogin = false\n")
     from cligoo.config import get_auto_relogin
+
     assert get_auto_relogin() is False
 
 
 def test_get_output_format_default(isolated_config):
     from cligoo.config import get_output_format
+
     assert get_output_format() == "table"
 
 
 def test_get_output_format_json_from_toml(isolated_config, tmp_path):
     _write_toml(tmp_path / "config.toml", '[output]\nformat = "json"\n')
     from cligoo.config import get_output_format
+
     assert get_output_format() == "json"
 
 
 def test_get_output_format_invalid_returns_table(isolated_config, tmp_path):
     _write_toml(tmp_path / "config.toml", '[output]\nformat = "csv"\n')
     from cligoo.config import get_output_format
+
     assert get_output_format() == "table"
 
 
 def test_get_compact_json_default(isolated_config):
     from cligoo.config import get_compact_json
+
     assert get_compact_json() is False
 
 
 def test_get_compact_json_true_from_toml(isolated_config, tmp_path):
     _write_toml(tmp_path / "config.toml", "[output]\ncompact_json = true\n")
     from cligoo.config import get_compact_json
+
     assert get_compact_json() is True
+
+
+def test_get_upload_retries_default(isolated_config):
+    from cligoo.config import get_upload_retries
+
+    assert get_upload_retries() == 5
+
+
+def test_get_upload_retries_custom_from_toml(isolated_config, tmp_path):
+    _write_toml(tmp_path / "config.toml", "[session]\nupload_retries = 10\n")
+    from cligoo.config import get_upload_retries
+
+    assert get_upload_retries() == 10
+
+
+def test_get_upload_retries_zero_allowed(isolated_config, tmp_path):
+    _write_toml(tmp_path / "config.toml", "[session]\nupload_retries = 0\n")
+    from cligoo.config import get_upload_retries
+
+    assert get_upload_retries() == 0
+
+
+def test_get_upload_retries_invalid_returns_default(isolated_config, tmp_path):
+    _write_toml(tmp_path / "config.toml", '[session]\nupload_retries = "bad"\n')
+    from cligoo.config import get_upload_retries
+
+    assert get_upload_retries() == 5

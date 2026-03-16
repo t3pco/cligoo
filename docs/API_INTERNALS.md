@@ -185,7 +185,7 @@ per-user authentication (that is handled by the JWT).
 **Override mechanism** (if Degoo rotates the key without a new CLI release):
 
 1. `DEGOO_API_KEY` environment variable — highest priority
-2. `"api_key"` field in `~/.config/cligoo/config.json`
+2. `"api_key"` field in `~/.config/cligoo/config.toml` (`[api]` section)
 3. Bundled default in `constants.py` — used when neither override is present
 
 The key is resolved once at module import time by `_resolve_api_key()` in
@@ -218,10 +218,10 @@ interaction when the existing Degoo session is still valid.
 
 ```bash
 cligoo config selects "Profile 3"
-  → saves {"chrome_profile": "Profile 3"} to config.json
+  → saves chrome_profile = "Profile 3" to config.toml ([session])
 
 cligoo login --browser:
-  1. reads config.json → profile_dir = "Profile 3"
+  1. reads config.toml → profile_dir = "Profile 3"
   2. creates tmp_dir = mkdtemp("degoo-login-")
   3. copies ~/Library/Application Support/Google/Chrome/Profile 3/Cookies
             → tmp_dir/Default/Cookies
@@ -1049,9 +1049,10 @@ src/cligoo/
 ├── queries.py     All GraphQL query/mutation strings (verbatim from network capture)
 ├── auth.py        Token storage, login, refresh, browser capture (with profile seeding), get_token()
 ├── chrome.py      Chrome installation detection; profile enumeration from Local State JSON
-├── config.py      Read/write ~/.config/cligoo/config.json (user preferences:
-│                  login_method, chrome_profile, api_key); atomic save_config()
-│                  via mkstemp+os.replace; get_api_key() resolves env→file→None
+├── config.py      Read/write ~/.config/cligoo/config.toml (user preferences:
+│                  login_method, chrome_profile, api_key, transfer_workers,
+│                  upload_retries, etc.); atomic save_config() via mkstemp+os.replace;
+│                  get_api_key() resolves env→file→None; legacy config.json fallback
 ├── api.py         DegooClient class — all API methods with retry/pagination logic
 └── cli.py         Click commands: all file/auth/config commands
 ```
@@ -1064,14 +1065,17 @@ Degoo ships new operation versions), `api.py` adds Python logic on top, and
 
 ```text
 ~/.config/cligoo/
-├── config.json        User preferences (chrome_profile, future settings)
+├── config.toml        User preferences — primary config (login_method, chrome_profile,
+│                      api_key, transfer_workers, upload_retries, output format, etc.)
+├── config.json        Legacy flat-JSON config — read as fallback if config.toml absent
 ├── cwd.json           Session state — current working directory (changes on every `cd`)
 ├── tokens.json        Auth token fallback when keyring is unavailable
 └── credentials.json   Email/password fallback when keyring is unavailable
 ```
 
-`config.json` is the only file the user intentionally sets via `cligoo config`.
-The other three are runtime state written automatically during normal use.
+`config.toml` is the only file the user intentionally sets via `cligoo config`.
+The other files are runtime state written automatically during normal use.
+`config.json` is a legacy fallback maintained for backwards compatibility.
 
 ---
 
@@ -1269,8 +1273,8 @@ Always pass `dict(DEFAULT_HEADERS)` (a shallow copy) to `httpx.Client`.
 ### 18c. `save_config()` must be atomic
 
 `Path.write_text()` truncates the file before writing. A `SIGKILL` between
-truncation and write completion leaves `config.json` empty. `json.loads("")`
-raises `JSONDecodeError`, which `load_config()`'s bare `except` silently
+truncation and write completion leaves `config.toml` empty. Parsing an empty
+TOML file raises an error which `load_config()`'s bare `except` silently
 swallows, returning `{}` and erasing all user settings. The correct pattern is
 `tempfile.mkstemp()` in the same directory followed by `os.replace()` — both
 steps are in `save_config()` and must stay that way.

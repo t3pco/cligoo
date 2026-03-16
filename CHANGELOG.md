@@ -7,6 +7,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+---
+
+## [0.1.1] — 2026-03-15
+
+### Added
+
+- **`--output json` / `-o json`** flag on all commands that benefit from structured output:
+  `whoami`, `quota`, `ls`, `tree`, `info`, `search`, `mkdir`, `upload`, `download`,
+  `mv`, `cp`, `rename`, `rm`, `trash`, `shared`, `share`, `unshare`, `feed`.
+  All item objects use a consistent snake_case schema (`id`, `name`, `category`,
+  `is_folder`, `size_bytes`, `path`, `created`, `modified`, `url`, …).
+  Recursive `ls`/`tree` JSON output includes an `"incomplete": true` flag when any
+  subfolder could not be listed due to an API error.
+- **`info` folder content size**: `cligoo info <folder>` now recursively walks the
+  tree and reports total content size, file count, and subfolder count. Use
+  `--no-size` to skip the walk on large trees.
+- **Streaming folder-size walk**: replaced `list_dir(limit=None)` bulk fetch with
+  `iter_dir()` generator that streams one API page at a time — peak memory is now
+  bounded to ~1 000 items regardless of tree depth.
+- **Clickable URLs in `info` output**: `URL` and `ThumbnailURL` fields render as
+  OSC 8 terminal hyperlinks (`[link=url]url[/link]`) in supporting terminals.
+- **Silent `cligoo login` when credentials are saved**: running `cligoo login` with
+  no flags and stored credentials no longer prompts — it logs in silently. Prompts
+  only appear on first use or when `--email`/`--password` flags are passed explicitly.
+- **Auto-relogin on any command**: any `cligoo` command transparently re-authenticates
+  when the access token expires; `cligoo login` is only needed on first setup or after
+  `cligoo logout`.
+- **Login rate-limit backoff**: after receiving HTTP 429 from Degoo's login endpoint,
+  all subsequent login attempts (auto and explicit) are blocked locally for 15 minutes
+  with a countdown message, preventing the rate limit from compounding.
+- **Legacy keyring migration**: credentials and tokens previously stored under the
+  `degoo-cli` or `degoo` keyring service name are detected and migrated to `cligoo`
+  automatically on first use.
+- **`cd` / `pwd` disabled-by-default as standalone commands**: outside `cligoo shell`,
+  `cd` and `pwd` show a helpful message pointing to the shell. Set
+  `[advanced] standalone_nav = true` in `config.toml` to re-enable them.
+- **Upload root guard**: attempting to upload directly to `/` (root, ID `"0"`) shows
+  a clear error with a usage example instead of silently failing.
+- **`_safe_int()` helper**: tolerates float-string sizes (`"1048576.0"`) from the API
+  in `_item_json` — no more `ValueError` on unexpected size formats.
+- **JSON output config option**: set `output.format = "json"` in `config.toml` to
+  make JSON the default output format for all commands without passing `-o json` each
+  time.
+- **`upload_retries` config option**: set `[session] upload_retries = N` in
+  `config.toml` to control how many times a failed GCS upload is retried (default 5).
+  Retries use exponential backoff (1 s, 2 s, 4 s … capped at 30 s). Set to `0` to
+  disable retries entirely.
+
+### Changed
+
+- `ls --output json` with depth > 0 now skips the initial `list_dir` call and walks
+  the tree directly — eliminates a redundant API round-trip and preserves sort order
+  for flat (non-recursive) JSON mode.
+- `_collect_tree_flat` returns `(items, incomplete)` tuple instead of a bare list;
+  all JSON callers include `"incomplete"` in the response envelope.
+- `whoami` JSON: `free_bytes` is clamped to `max(0, total - used)` — never negative
+  when the API omits `TotalQuota`.
+- `shared --json -l`: adds `"shared_with_error": true` alongside `null` when the
+  permissions API call fails, making errors distinguishable from "no shares".
+- Documentation (`README.md`, `docs/CLI_USAGE.md`): updated Authentication section
+  to describe silent login, auto-relogin, rate-limit protection, and degoo-cli
+  migration; added full JSON Output reference section.
+
+### Fixed
+
+- **Token expiry during long-running uploads/downloads**: `_client()` previously
+  snapshotted the access token at startup and passed it explicitly to `DegooClient`,
+  causing all API calls to fail with auth errors after ~1 hour. `DegooClient` is now
+  constructed without an explicit token so its `token` property calls `get_token()`
+  on every request — access tokens are refreshed transparently via the refresh token
+  or re-login without interrupting running transfers.
+- **GCS upload transient failure retry**: GCS network errors (`ConnectError`, timeouts)
+  and 5xx responses are now retried up to `upload_retries` times (default 5,
+  configurable via `[session] upload_retries` in `config.toml`) with exponential
+  backoff (1 s, 2 s, 4 s … capped at 30 s). 4xx responses (policy violations,
+  bad content type) are not retried — they indicate a non-recoverable condition.
+- **`quota` / `whoami` table output negative free space**: table path now clamps
+  free space to `max(0, total - used)` matching the JSON path — no more negative
+  values shown when the account is over-quota.
+- **`TotalQuota` absent causes division by zero or absurd 100 % usage**: both
+  `whoami` and `quota` now use `int(info.get("TotalQuota") or 0)` with an explicit
+  `if total else 0` guard on the percentage — missing quota info shows 0 % instead
+  of a division-by-zero traceback or a misleading 100 % reading.
+- **`whoami` JSON `file_size_limit_bytes` rejects float-string sizes**: switched
+  from `int(… or 0)` to `_safe_int(…)` so values like `"1048576.0"` parse
+  correctly instead of raising `ValueError`.
+- **`shared --output json` missing envelope**: output now wraps the item array in
+  `{"items": […], "count": N}` matching every other multi-item JSON command.
+- **`ls` flat JSON always reported `"incomplete": false`**: replaced the hardcoded
+  `False` with `len(items) >= limit` so callers know when results may be
+  truncated (heuristic — use `--limit N` to raise the cap).
+- **Login 429 rate-limit error shown on first occurrence**: previously the
+  rate-limit message was only shown on the *next* login attempt; now it is raised
+  immediately when a 429 is received.
+- **Rate-limit backoff not cleared after successful `login(save=False)`**: the
+  backoff file is now unconditionally deleted on a successful HTTP 200 response,
+  regardless of whether credentials are persisted.
+- **Corrupted login backoff file permanently disables rate-limit protection**:
+  a non-float or partially-written `.login_backoff` file is now deleted when it
+  cannot be parsed, restoring normal rate-limit behaviour.
+- **Legacy keyring migration returned `None` refresh token / password**: both
+  migration paths now normalise `None` to `""` before returning — prevents
+  `login(email, None)` in the auto-relogin path.
+- **File handle leak on GCS upload retry**: `_ProgressFile` / bare file handle
+  now closed via `try/finally` so the handle is released even when
+  `httpx.post()` raises or a retry is triggered.
+- Integration test `test_cli_cd_and_pwd`: patched `get_standalone_nav_enabled` so the
+  test works now that `cd`/`pwd` are disabled by default outside the shell.
+- Test `test_login_429_sets_backoff_and_next_call_is_blocked`: replaced vacuous
+  `assert` inside bare `except` with `pytest.raises` so the test actually fails when
+  no exception is raised.
+
+---
+
 ## [0.1.0] — 2026-03-15 — First public beta
 
 ### Core API client (`api.py`)

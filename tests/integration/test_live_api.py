@@ -384,6 +384,7 @@ class TestCLI:
         runner = CliRunner()
         with pytest.MonkeyPatch().context() as mp:
             mp.setattr(cli_module, "_CWD_FILE", cwd_file)
+            mp.setattr("cligoo.cli.get_standalone_nav_enabled", lambda: True)
             res1 = runner.invoke(main, ["cd", "/"])
             assert res1.exit_code == 0, res1.output
             res2 = runner.invoke(main, ["pwd"])

@@ -115,6 +115,38 @@ def test_logout_command(tmp_path):
         mock_logout.assert_called_once()
 
 
+def test_login_429_sets_backoff_and_next_call_is_blocked(tmp_path):
+    """A 429 from Degoo sets a backoff; subsequent login attempts fail locally."""
+    import pytest
+
+    from cligoo.auth import AuthError, login
+
+    backoff_file = tmp_path / ".login_backoff"
+
+    # Patch the module-level backoff file path
+    with patch("cligoo.auth._LOGIN_BACKOFF_FILE", backoff_file):
+        # Simulate a 429 response
+        mock_resp = MagicMock()
+        mock_resp.status_code = 429
+        mock_resp.headers = {"content-type": "application/json"}
+        mock_resp.text = ""
+
+        with patch("httpx.post", return_value=mock_resp):
+            with pytest.raises(AuthError) as exc_info:
+                login("user@example.com", "pw")
+            assert "429" in str(exc_info.value) or "rate" in str(exc_info.value).lower()
+
+        # Backoff file should now exist
+        assert backoff_file.exists()
+
+        # Attempting login again should fail immediately (without hitting the network)
+        with patch("httpx.post") as mock_post:
+            with pytest.raises(AuthError) as exc_info2:
+                login("user@example.com", "pw")
+            assert "rate" in str(exc_info2.value).lower() or "wait" in str(exc_info2.value).lower()
+            mock_post.assert_not_called()  # no HTTP call made
+
+
 def test_login_bare_uses_password_by_default(tmp_path):
     """degoo login with no flags uses the email/password flow when not configured."""
     with (
@@ -201,7 +233,24 @@ def test_quota_api_error():
     mock.get_user_info.side_effect = DegooAPIError("quota error")
     with _patch_client(mock):
         result = _runner().invoke(main, ["quota"])
-    assert result.exit_code != 0# ── pwd / cd ──────────────────────────────────────────────────────────────────
+    assert result.exit_code != 0
+
+
+def test_quota_json_free_bytes_never_negative():
+    """quota --output json free_bytes must be >= 0 when TotalQuota is absent/zero."""
+    mock = _mock_client()
+    # TotalQuota absent → defaults to 1; UsedQuota large → would be negative without guard
+    mock.get_user_info.return_value = {"UsedQuota": 999_000_000_000, "TotalQuota": 0}
+    with _patch_client(mock):
+        result = _runner().invoke(main, ["quota", "--output", "json"])
+    assert result.exit_code == 0, result.output
+    import json
+
+    data = json.loads(result.output)
+    assert data["free_bytes"] >= 0, f"free_bytes was negative: {data['free_bytes']}"
+
+
+# ── pwd / cd ──────────────────────────────────────────────────────────────────
 
 
 def test_pwd_disabled_by_default():
@@ -224,8 +273,7 @@ def test_pwd_enabled(tmp_path):
     """When standalone_nav is enabled, pwd shows the stored CWD."""
     cwd_file = tmp_path / "cwd.json"
     cwd_file.write_text(json.dumps({"path": "/Web"}))
-    with patch("cligoo.cli.get_standalone_nav_enabled", return_value=True), \
-            patch("cligoo.cli._CWD_FILE", cwd_file):
+    with patch("cligoo.cli.get_standalone_nav_enabled", return_value=True), patch("cligoo.cli._CWD_FILE", cwd_file):
         result = _runner().invoke(main, ["pwd"])
     assert result.exit_code == 0, result.output
     assert "/Web" in result.output
@@ -234,8 +282,7 @@ def test_pwd_enabled(tmp_path):
 def test_pwd_enabled_default(tmp_path):
     """When CWD file is absent, pwd shows / (the default)."""
     cwd_file = tmp_path / "cwd.json"  # does not exist
-    with patch("cligoo.cli.get_standalone_nav_enabled", return_value=True), \
-            patch("cligoo.cli._CWD_FILE", cwd_file):
+    with patch("cligoo.cli.get_standalone_nav_enabled", return_value=True), patch("cligoo.cli._CWD_FILE", cwd_file):
         result = _runner().invoke(main, ["pwd"])
     assert result.exit_code == 0, result.output
     assert "/" in result.output
@@ -245,8 +292,11 @@ def test_cd_root_enabled(tmp_path):
     """cd / should succeed when standalone_nav is enabled."""
     cwd_file = tmp_path / "cwd.json"
     mock = _mock_client()
-    with patch("cligoo.cli.get_standalone_nav_enabled", return_value=True), \
-            _patch_client(mock), patch("cligoo.cli._CWD_FILE", cwd_file):
+    with (
+        patch("cligoo.cli.get_standalone_nav_enabled", return_value=True),
+        _patch_client(mock),
+        patch("cligoo.cli._CWD_FILE", cwd_file),
+    ):
         result = _runner().invoke(main, ["cd", "/"])
     assert result.exit_code == 0, result.output
 
@@ -257,8 +307,11 @@ def test_cd_valid_path_enabled(tmp_path):
     mock = _mock_client()
     folder = {"ID": "111", "Name": "Web", "Category": 1, "Size": "0", "LastModificationTime": "1000", "URL": ""}
     mock.resolve_path.return_value = folder
-    with patch("cligoo.cli.get_standalone_nav_enabled", return_value=True), \
-            _patch_client(mock), patch("cligoo.cli._CWD_FILE", cwd_file):
+    with (
+        patch("cligoo.cli.get_standalone_nav_enabled", return_value=True),
+        _patch_client(mock),
+        patch("cligoo.cli._CWD_FILE", cwd_file),
+    ):
         result = _runner().invoke(main, ["cd", "/Web"])
     assert result.exit_code == 0, result.output
     assert "Web" in result.output
@@ -269,8 +322,11 @@ def test_cd_not_found_enabled(tmp_path):
     cwd_file = tmp_path / "cwd.json"
     mock = _mock_client()
     mock.resolve_path.return_value = None
-    with patch("cligoo.cli.get_standalone_nav_enabled", return_value=True), \
-            _patch_client(mock), patch("cligoo.cli._CWD_FILE", cwd_file):
+    with (
+        patch("cligoo.cli.get_standalone_nav_enabled", return_value=True),
+        _patch_client(mock),
+        patch("cligoo.cli._CWD_FILE", cwd_file),
+    ):
         result = _runner().invoke(main, ["cd", "/nonexistent"])
     assert result.exit_code != 0
 
@@ -285,8 +341,11 @@ def test_cd_file_rejected_enabled(tmp_path):
         "Category": 6,
         "URL": "https://cdn.example.com/photo.jpg",
     }
-    with patch("cligoo.cli.get_standalone_nav_enabled", return_value=True), \
-            _patch_client(mock), patch("cligoo.cli._CWD_FILE", cwd_file):
+    with (
+        patch("cligoo.cli.get_standalone_nav_enabled", return_value=True),
+        _patch_client(mock),
+        patch("cligoo.cli._CWD_FILE", cwd_file),
+    ):
         result = _runner().invoke(main, ["cd", "/Web/photo.jpg"])
     assert result.exit_code != 0
 
@@ -500,6 +559,7 @@ def test_info_folder_shows_content_size():
     assert "Content Size" in result.output
     # Exactly 2 files should be reported on the Files row (not Sub-folders)
     import re
+
     lines = result.output.splitlines()
     files_line = next((ln for ln in lines if "Files" in ln and "Sub-folders" not in ln), None)
     assert files_line is not None, "Expected a 'Files' row in output"
@@ -530,6 +590,37 @@ def test_info_folder_no_size_flag():
     assert result.exit_code == 0, result.output
     assert "skipped" in result.output
     mock.iter_dir.assert_not_called()
+
+
+def test_info_folder_size_tolerates_float_string_sizes():
+    """_compute_folder_size must count files whose Size is a float-string like '1048576.0'."""
+    mock = _mock_client()
+    folder = {
+        "ID": "300",
+        "Name": "Floats",
+        "Category": 2,
+        "Size": "0",
+        "ParentID": "0",
+        "LastModificationTime": "0",
+        "CreationTime": "0",
+        "FilePath": "/Floats",
+        "IsInRecycleBin": False,
+        "Description": "",
+        "URL": "",
+        "ThumbnailURL": "",
+    }
+    children = [
+        {"ID": "301", "Name": "a.mp4", "Category": 8, "Size": "1048576.0", "URL": "http://x"},
+        {"ID": "302", "Name": "b.mp4", "Category": 8, "Size": "2097152.0", "URL": "http://y"},
+    ]
+    mock.get_item.return_value = folder
+    mock.is_folder.side_effect = lambda item: item.get("Category", 0) in {1, 2, 3}
+    mock.iter_dir.return_value = iter(children)
+    with _patch_client(mock):
+        result = _runner().invoke(main, ["info", "300"])
+    assert result.exit_code == 0, result.output
+    # 1 048 576 + 2 097 152 = 3 145 728 bytes = 3.0 MiB — must appear in output
+    assert "3.0" in result.output or "3 MB" in result.output or "3145728" in result.output, result.output
 
 
 def test_info_folder_incomplete_on_api_error():
@@ -752,8 +843,7 @@ def test_upload_exclude_pattern(tmp_path):
     with _patch_client(mock), patch("cligoo.cli._CWD_FILE", cwd_file):
         result = _runner().invoke(
             main,
-            ["upload", str(local_dir), "--dest", "/Web", "-r",
-             "--exclude", "*.tmp", "--exclude", ".DS_Store"],
+            ["upload", str(local_dir), "--dest", "/Web", "-r", "--exclude", "*.tmp", "--exclude", ".DS_Store"],
         )
     assert result.exit_code == 0, result.output
     # Only main.py should be uploaded; *.tmp and .DS_Store are excluded
@@ -823,9 +913,7 @@ def test_download_multi_item(tmp_path):
     # get_item returns the default photo item for both IDs
     mock.download.return_value = tmp_path / "photo.jpg"
     with _patch_client(mock):
-        result = _runner().invoke(
-            main, ["download", "111", "999", "--dest", str(tmp_path)]
-        )
+        result = _runner().invoke(main, ["download", "111", "999", "--dest", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert mock.download.call_count == 2
 
@@ -889,9 +977,7 @@ def test_mv_rename_when_dest_absent():
     """Passing a path that does not exist → rename in-place."""
     mock = _mock_client()
     # resolve_path returns None for dest (not found), but parent exists
-    mock.resolve_path.side_effect = lambda p: (
-        None if p == "/Web/NewName" else {"ID": "0", "Name": "/", "Category": 2}
-    )
+    mock.resolve_path.side_effect = lambda p: None if p == "/Web/NewName" else {"ID": "0", "Name": "/", "Category": 2}
     mock.get_item.return_value["ParentID"] = "0"
     with _patch_client(mock):
         result = _runner().invoke(main, ["mv", "999", "/Web/NewName"])
@@ -1074,12 +1160,14 @@ def test_unknown_command():
 # ── _client() token handling ──────────────────────────────────────────────────
 
 
-def test_client_passes_fetched_token_to_degooclient():
-    """_client() must not discard the fetched token and let DegooClient re-fetch it.
+def test_client_validates_token_and_creates_dynamic_client():
+    """_client() validates auth eagerly but creates DegooClient without a fixed token.
 
-    Regression guard for the double-fetch bug: previously _client() called
-    get_token() to validate but then constructed DegooClient() with no token,
-    causing a second get_token() call on the first API request.
+    DegooClient must be constructed with no explicit token so that its .token
+    property calls get_token() on every request — this enables transparent
+    token refresh during long-running uploads/downloads (5+ hours).
+    Passing token= explicitly would snapshot the token at startup and cause
+    all requests to fail after the access token expires (~1 hour).
     """
 
     from cligoo.cli import _client
@@ -1091,18 +1179,15 @@ def test_client_passes_fetched_token_to_degooclient():
         return "the-token"
 
     with (
-        # _client() does `from .auth import get_token` locally, so patch the
-        # canonical location cligoo.auth.get_token.
         patch("cligoo.auth.get_token", side_effect=fake_get_token),
         patch("cligoo.cli.DegooClient") as MockClient,
     ):
         _client()
 
-    # get_token must have been called exactly once (in _client) —
-    # DegooClient should receive the token and not fetch it again.
-    assert len(get_token_calls) == 1, f"get_token called {len(get_token_calls)} times; expected exactly 1"
-    # The token must have been forwarded to DegooClient's constructor.
-    MockClient.assert_called_once_with(token="the-token")
+    # get_token is called once for eager validation in _client().
+    assert len(get_token_calls) == 1, f"get_token called {len(get_token_calls)} times; expected 1"
+    # DegooClient must NOT receive a fixed token — dynamic refresh requires token=None.
+    MockClient.assert_called_once_with()
 
 
 # ── Relative path resolution (_resolve_item CWD-awareness) ────────────────────

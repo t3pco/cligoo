@@ -65,7 +65,7 @@ src/cligoo/
   auth.py         Token fetch/store/refresh; browser OAuth via Playwright
   chrome.py       Cross-platform Chrome installation and profile detection
   cli.py          Click command group; all `cligoo <cmd>` commands
-  config.py       Read/write ~/.config/cligoo/config.json; get_* helpers
+  config.py       Read/write ~/.config/cligoo/config.toml; get_* helpers
   constants.py    API endpoints, category IDs, default headers, config paths
   queries.py      GraphQL query and mutation strings (no logic — strings only)
   shell.py        DegooShell (cmd.Cmd REPL); all `cligoo shell` built-in commands
@@ -247,6 +247,9 @@ markdownlint <changed-file.md>
 ```
 
 Fix all errors before moving on. **Do not skip any step.**
+
+> **Commit rule:** Never create a git commit unless the user explicitly asks for one.
+> Complete all code changes, tests, and lint passes first; only commit when instructed.
 
 Integration tests (live API, require Degoo credentials):
 

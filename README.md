@@ -69,7 +69,7 @@ make install-dev      # editable install for development
 # First-time setup: choose login method and optional Chrome profile
 cligoo config
 
-# Log in
+# Log in (prompts once; credentials are saved to keyring for all future use)
 cligoo login
 
 # See account info and quota
@@ -124,7 +124,7 @@ cligoo ls          # lists /Web/Photos (cwd used automatically)
 ### Uploading files and folders
 
 Multiple files and directories can be transferred in a single command.
-Transfers run in parallel (default 20 workers, configurable via `transfer_workers` in `~/.config/cligoo/config.json`).
+Transfers run in parallel (default 20 workers, configurable via `transfer_workers` in `~/.config/cligoo/config.toml`).
 
 ```bash
 # Upload a single file to a specific folder
@@ -257,17 +257,20 @@ Run `cligoo config` once to choose and save your preferred login method. Bare
 
 ```bash
 cligoo config   # choose "Password" when prompted
-cligoo login    # prompts for email and password
+cligoo login    # first time: prompts for email and password; thereafter: silent
 ```
 
 After a successful login, both the **access token** and your **email + password** are stored in the system keyring (macOS Keychain, GNOME Keyring, Windows Credential Manager) — never in `config.toml`. A plaintext-file fallback (`~/.config/cligoo/credentials.json`, mode 600) is used only when the keyring is unavailable.
 
-Stored credentials enable two things:
+Stored credentials enable fully transparent operation:
 
-- **Auto-refresh**: when the access token expires (~1 hour), `cligoo` silently re-authenticates using the stored password — no re-prompting.
-- **Prefilled login**: `cligoo login` uses the stored email as default and the stored password automatically, so no typing is needed unless credentials change.
+- **No re-login needed**: once credentials are stored, `cligoo login` with no flags runs silently — no prompts. Only pass `--email` or `--password` explicitly when you want to change accounts or override the stored value.
+- **Auto-relogin on any command**: when the short-lived access token expires (~1 hour), any `cligoo` command (not just `cligoo login`) silently re-authenticates using the stored password and carries on. You will never be asked to log in mid-workflow.
+- **Rate-limit protection**: Degoo limits how often you can call the login endpoint. If a `429 Too Many Requests` response is received, cligoo automatically backs off locally for 15 minutes — no further login attempts are made to Degoo during that window, preventing the rate limit from compounding. You will see a countdown (`please wait 14m 32s`) instead of a network error.
 
 Run `cligoo logout` to remove all stored tokens and credentials from the keyring.
+
+> **Upgrading from degoo-cli?** Credentials and tokens previously saved under the `degoo-cli` keyring service are detected and migrated to `cligoo` automatically on first use — no manual steps needed.
 
 > **Account created via Google / Apple / Facebook?** Your account has no
 > password set. You can create one (or reset a forgotten one) at
@@ -390,7 +393,7 @@ src/cligoo/
   auth.py        Authentication & token management
   chrome.py      Chrome installation & profile detection
   cli.py         Click CLI commands
-  config.py      Read/write ~/.config/cligoo/config.json
+  config.py      Read/write ~/.config/cligoo/config.toml
   constants.py   Endpoints, categories, config paths
   queries.py     GraphQL query/mutation strings
   shell.py       Interactive Degoo shell REPL

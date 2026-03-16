@@ -24,6 +24,9 @@ TOKEN_FILE = CONFIG_DIR / "tokens.json"
 CRED_FILE = CONFIG_DIR / "credentials.json"
 
 SERVICE_NAME = "cligoo"
+# Legacy service names from previous versions of the tool.
+# load() / load_credentials() will migrate entries from these to SERVICE_NAME.
+_LEGACY_SERVICE_NAMES = ["degoo-cli", "degoo"]
 
 
 class AuthError(Exception):
@@ -75,6 +78,21 @@ class TokenStore:
                     return tok, ref
             except Exception:
                 pass
+            # One-time migration from legacy keyring service names
+            for legacy in _LEGACY_SERVICE_NAMES:
+                try:
+                    tok = self._kr.get_password(legacy, "token")
+                    ref = self._kr.get_password(legacy, "refresh_token")
+                    if tok:
+                        self.save(tok, ref or "")
+                        for key in ("token", "refresh_token"):
+                            try:
+                                self._kr.delete_password(legacy, key)
+                            except Exception:
+                                pass
+                        return tok, ref or ""
+                except Exception:
+                    pass
         if TOKEN_FILE.exists():
             data = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
             return data.get("token"), data.get("refresh_token")
@@ -118,6 +136,25 @@ class TokenStore:
                     return email, pw
             except Exception:
                 pass
+            # One-time migration from legacy keyring service names
+            for legacy in _LEGACY_SERVICE_NAMES:
+                try:
+                    email = self._kr.get_password(legacy, "email")
+                    pw = self._kr.get_password(legacy, "password")
+                    if email:
+                        self.save_credentials(email, pw or "")
+                        for key in ("email", "password"):
+                            try:
+                                self._kr.delete_password(legacy, key)
+                            except Exception:
+                                pass
+                        print(
+                            f"⚠  Migrated credentials from '{legacy}' keyring entry to 'cligoo'.",
+                            file=sys.stderr,
+                        )
+                        return email, pw or ""
+                except Exception:
+                    pass
         if CRED_FILE.exists():
             data = json.loads(CRED_FILE.read_text(encoding="utf-8"))
             return data.get("email"), data.get("password")
@@ -176,6 +213,43 @@ def _write_private(path: Path, content: str) -> None:
 
 _store = TokenStore()
 
+# ── Login rate-limit backoff ───────────────────────────────────────────────────
+_LOGIN_BACKOFF_FILE = CONFIG_DIR / ".login_backoff"
+_LOGIN_BACKOFF_SECONDS = 900  # 15 minutes — matches Degoo's observed rate-limit window
+
+
+def _check_login_backoff() -> Optional[float]:
+    """Return remaining backoff seconds if a recent 429 was recorded, else None."""
+    if not _LOGIN_BACKOFF_FILE.exists():
+        return None
+    try:
+        ts = float(_LOGIN_BACKOFF_FILE.read_text(encoding="utf-8").strip())
+        remaining = ts + _LOGIN_BACKOFF_SECONDS - time.time()
+        if remaining > 0:
+            return remaining
+        _LOGIN_BACKOFF_FILE.unlink(missing_ok=True)
+    except Exception:
+        # Corrupted or unreadable file — delete it so the guard is not permanently bypassed
+        _LOGIN_BACKOFF_FILE.unlink(missing_ok=True)
+    return None
+
+
+def _set_login_backoff() -> None:
+    """Record that a 429 was received so subsequent attempts back off."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        _LOGIN_BACKOFF_FILE.write_text(str(time.time()), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _clear_login_backoff() -> None:
+    """Remove the backoff file after a successful login."""
+    try:
+        _LOGIN_BACKOFF_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
 
 def _token_expired(token: str, margin: int = 60) -> bool:
     """Return True if a JWT is expired (or will be within *margin* seconds).
@@ -214,11 +288,27 @@ def login(email: str, password: str, *, save: bool = True) -> str:
 
     The refresh token is persisted so future calls can use ``get_token()``.
     """
+    remaining = _check_login_backoff()
+    if remaining is not None:
+        mins = int(remaining // 60)
+        secs = int(remaining % 60)
+        wait = f"{mins}m {secs}s" if mins else f"{secs}s"
+        raise AuthError(
+            f"Login rate-limited — please wait {wait} before trying again.\n"
+            "  (Degoo limits how often you can log in with email/password.)"
+        )
+
     resp = httpx.post(
         LOGIN_URL,
         json={"GenerateToken": True, "Username": email, "Password": password},
         timeout=30,
     )
+    if resp.status_code == 429:
+        _set_login_backoff()
+        raise AuthError(
+            f"Login rate-limited — please wait {_LOGIN_BACKOFF_SECONDS // 60}m before trying again.\n"
+            "  (Degoo limits how often you can log in with email/password.)"
+        )
     if resp.status_code != 200:
         raise AuthError(f"Login failed (HTTP {resp.status_code}): {_api_error_message(resp)}")
 
@@ -230,6 +320,9 @@ def login(email: str, password: str, *, save: bool = True) -> str:
         raise AuthError(f"Unexpected login response: {data}")
 
     access_token = _exchange_refresh_token(refresh_token)
+
+    # Clear backoff regardless of save= — a successful login proves we're not rate-limited
+    _clear_login_backoff()
 
     if save:
         _store.save(access_token, refresh_token)
@@ -452,10 +545,8 @@ def fetch_token_via_browser() -> tuple[str, str]:
                     # 2. localStorage — Degoo web app stores auth state here
                     if not refresh_token:
                         try:
-                            ls_entries = page.evaluate(
-                                "() => Object.entries(window.localStorage)"
-                            )
-                            for _key, val in (ls_entries or []):
+                            ls_entries = page.evaluate("() => Object.entries(window.localStorage)")
+                            for _key, val in ls_entries or []:
                                 if (
                                     isinstance(val, str)
                                     and val.startswith("ey")
@@ -471,11 +562,7 @@ def fetch_token_via_browser() -> tuple[str, str]:
                     if not refresh_token:
                         for cookie in page.context.cookies():
                             val = cookie.get("value", "")
-                            if (
-                                val.startswith("ey")
-                                and len(val) > 50
-                                and val != access_token
-                            ):
+                            if val.startswith("ey") and len(val) > 50 and val != access_token:
                                 refresh_token = val
                                 break
             finally:
@@ -520,6 +607,7 @@ def get_token() -> str:
 
     # 3) Try re-login with saved credentials (if auto_relogin is enabled)
     from .config import get_auto_relogin
+
     if get_auto_relogin():
         email, password = _store.load_credentials()
         if email and password:

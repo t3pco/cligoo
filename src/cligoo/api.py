@@ -94,7 +94,7 @@ class DegooClient:
     ) -> None:
         from .config import get_api_debug, get_api_timeout, get_graphql_url
 
-        self._explicit_token = token   # None → use get_token() dynamically
+        self._explicit_token = token  # None → use get_token() dynamically
         self._token = token
         self._timeout = timeout if timeout is not None else get_api_timeout()
         self._graphql_url = graphql_url or get_graphql_url() or GRAPHQL_URL
@@ -145,7 +145,15 @@ class DegooClient:
         # access tokens are refreshed transparently during long-running shell
         # sessions or bulk uploads/downloads.  get_token() is cheap (keyring
         # read + JWT decode) when the token is still valid.
-        self._token = get_token()
+        from .auth import AuthError
+
+        try:
+            self._token = get_token()
+        except AuthError as exc:
+            # Translate auth failures into DegooAPIError so every command
+            # handler that catches DegooAPIError also handles token expiry
+            # gracefully (✗ message + exit 1) without uncaught exceptions.
+            raise DegooAPIError(str(exc)) from exc
         return self._token
 
     def _gql(self, query: str, variables: dict[str, Any] | None = None, operation: str | None = None) -> Any:
@@ -476,8 +484,8 @@ class DegooClient:
         h.update(bytes(CHECKSUM_SEED))
         with open(filepath, "rb") as f:
             h.update(f.read(1024 * 1024))
-        proto = b'\x0a\x14' + h.digest() + b'\x10\x00'
-        return base64.urlsafe_b64encode(proto).decode().rstrip('=')
+        proto = b"\x0a\x14" + h.digest() + b"\x10\x00"
+        return base64.urlsafe_b64encode(proto).decode().rstrip("=")
 
     def _get_upload_auth(self, parent_id: str, filename: str, size: int, checksum: str) -> dict:
         """Get upload authorization (Google Cloud Storage credentials).
@@ -522,6 +530,7 @@ class DegooClient:
         progress_callback: Any = None,
         verify: bool = False,
         max_retries: int = 3,
+        upload_retries: int = 5,
     ) -> str:
         """Upload a local file to Degoo.
 
@@ -534,6 +543,8 @@ class DegooClient:
             progress_callback: Optional callback for upload progress
             verify: Whether to verify the upload succeeded (detects GCS linkage issues)
             max_retries: Number of verification retry attempts (if verify=True)
+            upload_retries: Retry attempts for transient GCS upload failures (network
+                errors and 5xx responses). 4xx responses are not retried. Default: 5.
         """
         filepath = Path(filepath)
         if not filepath.exists():
@@ -587,7 +598,7 @@ class DegooClient:
         form_data["signature"] = auth_data["Signature"]
         # GCS key format (required by the policy): {KeyPrefix}{ext}/{checksum}.{ext}
         # e.g. "ADfzPh/6tnxDg/pdf/ChQVgjMd4f9UAnRnJNB8-dCTOpsPLBAA.pdf"
-        ext = Path(filename).suffix.lstrip('.').lower() or "bin"
+        ext = Path(filename).suffix.lstrip(".").lower() or "bin"
         form_data["key"] = f"{key_prefix}{ext}/{checksum}.{ext}"
         form_data["Content-Type"] = content_type
         if auth_data.get("ACL"):
@@ -596,18 +607,45 @@ class DegooClient:
         for kv in auth_data.get("AdditionalBody", []) or []:
             form_data[kv["Key"]] = kv["Value"]
 
-        if progress_callback:
-            pf: Any = _ProgressFile(filepath, size, progress_callback)
-        else:
-            pf = open(filepath, "rb")  # noqa: WPS515
-        try:
-            files = {"file": (filename, pf, content_type)}
-            upload_resp = httpx.post(base_url, data=form_data, files=files, timeout=600)
-        finally:
-            pf.close()
+        # Retry loop for transient GCS upload failures (network errors, 5xx).
+        # 4xx responses (policy violations, bad content type) are not retried.
+        last_exc: Exception = RuntimeError("upload_retries must be >= 0")
+        for attempt in range(max(1, upload_retries + 1)):
+            if attempt > 0:
+                backoff = min(2 ** (attempt - 1), 30)
+                time.sleep(backoff)
 
-        if upload_resp.status_code not in (200, 201, 204):
+            pf: Any = None
+            try:
+                if progress_callback:
+                    pf = _ProgressFile(filepath, size, progress_callback)
+                else:
+                    pf = open(filepath, "rb")  # noqa: WPS515
+                files = {"file": (filename, pf, content_type)}
+                upload_resp = httpx.post(base_url, data=form_data, files=files, timeout=600)
+            except httpx.RequestError as exc:
+                last_exc = exc
+                continue  # network drop — retry
+            finally:
+                if pf is not None:
+                    pf.close()
+
+            if upload_resp.status_code in (200, 201, 204):
+                break  # success
+
+            if upload_resp.status_code >= 500:
+                last_exc = DegooAPIError(
+                    f"Upload to storage failed (HTTP {upload_resp.status_code}): {upload_resp.text}"
+                )
+                continue  # transient server error — retry
+
+            # 4xx: policy / auth problem — will not recover, raise immediately
             raise DegooAPIError(f"Upload to storage failed (HTTP {upload_resp.status_code}): {upload_resp.text}")
+        else:
+            # All attempts exhausted
+            raise DegooAPIError(f"Upload to storage failed after {upload_retries} retries: {last_exc}") from (
+                last_exc if isinstance(last_exc, Exception) else None
+            )
 
         # 3. Register the file in Degoo
         # CreationTime must be in milliseconds (JavaScript Date.now() convention).
@@ -650,9 +688,7 @@ class DegooClient:
         if verify and file_id:
             from .upload_verifier import verify_and_retry
 
-            verify_and_retry(
-                self, file_id, filename, size, max_retries=max_retries, verbose=False
-            )
+            verify_and_retry(self, file_id, filename, size, max_retries=max_retries, verbose=False)
 
         return file_id or upload_result
 
@@ -772,9 +808,9 @@ class DegooClient:
             if item.get("Name") != name:
                 continue
             if self.is_folder(item):
-                return item          # real folder — best possible match
+                return item  # real folder — best possible match
             if best is None:
-                best = item          # keep first non-folder match as fallback
+                best = item  # keep first non-folder match as fallback
         return best
 
     @staticmethod
