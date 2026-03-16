@@ -178,9 +178,13 @@ The GraphQL endpoint is an **AWS AppSync** service. All requests also carry:
 x-api-key: da2-vs6twz5vnjdavpqndtbzg3prra
 ```
 
-This key is **public** — embedded in the JS bundle at `app.degoo.com` and
-does not change per-user. Its role is endpoint-level throttling / routing, not
-per-user authentication (that is handled by the JWT).
+This key is **public** — it does not change per-user and its role is
+endpoint-level throttling / routing, not per-user authentication (that is
+handled by the JWT). The key has been publicly documented for years as a
+required constant for talking to Degoo's AppSync endpoint; it appears
+verbatim in the original reference implementation
+[bernd-wechner/Degoo](https://github.com/bernd-wechner/Degoo/blob/master/degoo/API.py),
+the community project that informed `cligoo`'s API work.
 
 **Override mechanism** (if Degoo rotates the key without a new CLI release):
 
