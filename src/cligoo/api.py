@@ -145,7 +145,15 @@ class DegooClient:
         # access tokens are refreshed transparently during long-running shell
         # sessions or bulk uploads/downloads.  get_token() is cheap (keyring
         # read + JWT decode) when the token is still valid.
-        self._token = get_token()
+        from .auth import AuthError
+
+        try:
+            self._token = get_token()
+        except AuthError as exc:
+            # Translate auth failures into DegooAPIError so every command
+            # handler that catches DegooAPIError also handles token expiry
+            # gracefully (✗ message + exit 1) without uncaught exceptions.
+            raise DegooAPIError(str(exc)) from exc
         return self._token
 
     def _gql(self, query: str, variables: dict[str, Any] | None = None, operation: str | None = None) -> Any:

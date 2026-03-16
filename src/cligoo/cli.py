@@ -145,7 +145,8 @@ def _collect_tree_flat(
     """Recursively collect all items under parent_id as a flat list with full paths.
 
     Returns ``(items, incomplete)`` where *incomplete* is True if any API error
-    was encountered while walking sub-folders (results may be partial).
+    was encountered while walking sub-folders (results may be partial), or if
+    a folder's child list was truncated at *limit* (more items may exist).
     """
     if current_depth >= max_depth:
         return [], False
@@ -154,7 +155,9 @@ def _collect_tree_flat(
     except DegooAPIError:
         return [], True
     result = []
-    incomplete = False
+    # If the returned count equals the limit the folder may have more children
+    # that were silently dropped — flag the whole tree as potentially incomplete.
+    incomplete = len(children) >= limit
     for child in children:
         child_path = parent_path.rstrip("/") + "/" + child.get("Name", "")
         entry = _item_json(child)
