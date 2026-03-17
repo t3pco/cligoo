@@ -36,7 +36,8 @@
   - [`cligoo share`](#cligoo-share-pathid-user)
   - [`cligoo unshare`](#cligoo-unshare-pathid)
 - [Feed](#feed)
-  - [`cligoo feed`](#cligoo-feed--n-n)
+  - [`cligoo feed`](#cligoo-feed)
+  - [`cligoo feed --watch`](#cligoo-feed---watch)
 - [Configuration](#configuration)
   - [`cligoo config`](#cligoo-config)
   - [Storage locations](#storage-locations)
@@ -599,14 +600,67 @@ cligoo unshare 123456789
 
 ## Feed
 
-### `cligoo feed [-n N]`
+### `cligoo feed`
 
-Show the moments / photo timeline (default limit 30).
+Show the upload feed / moments timeline. Degoo returns items in reverse-chronological
+order. The table columns are:
+
+| Column | Description |
+| --- | --- |
+| ID | Degoo item ID |
+| Type | File category icon |
+| Name | File name |
+| Size | File size (humanised) |
+| Source path | Local device path at upload time (iOS/Android path, not a Degoo cloud path) |
+| Platform | Client that uploaded the file: iOS, Android, Web, Windows, macOS, Linux, or `—` if not recorded |
+| Date | Upload timestamp when available (`LastUploadTime`); falls back to original file creation date (`CreationTime`) for legacy mobile uploads — labelled "Date" rather than "Uploaded" to reflect this |
 
 ```bash
-cligoo feed
-cligoo feed -n 50
+cligoo feed           # last 30 items (default)
+cligoo feed -n 100    # last 100 items
+cligoo feed -o json   # JSON envelope: {"items": [...], "count": N}
 ```
+
+**Options:**
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `-n` / `--limit` | `30` | Maximum number of items to fetch |
+| `-w` / `--watch` | off | Poll continuously for new uploads (see below) |
+| `-i` / `--interval` | `30` | Seconds between polls (only used with `--watch`) |
+| `-o` / `--output` | table | `json` for machine-readable output |
+
+---
+
+### `cligoo feed --watch`
+
+Poll the feed on a fixed interval and print **only newly appeared items** as they
+arrive — from any client (iOS, Android, web, cligoo, etc.). Useful for monitoring
+uploads in real time or triggering downstream automation.
+
+On the first poll a full snapshot is printed for context. Every subsequent poll emits
+only items that were not present in the previous response. Press **Ctrl-C** to stop.
+
+```bash
+cligoo feed --watch                  # poll every 30 s (default)
+cligoo feed --watch --interval 10    # poll every 10 s
+cligoo feed -w -i 60                 # shorthand, poll every 60 s
+
+# Pipe new uploads to jq in real time
+cligoo feed --watch --output json | jq '.item.name'
+```
+
+In `--output json` watch mode each new item is emitted as a standalone JSON object
+on stdout so the stream can be consumed line-by-line:
+
+```json
+{"event": "snapshot", "items": [...], "count": 7}
+{"event": "new", "item": {"id": "...", "name": "photo.jpg", ...}}
+{"event": "new", "item": {"id": "...", "name": "video.mp4", ...}}
+```
+
+Progress/status messages (polling interval notice, "Stopped." on Ctrl-C) are written
+to **stderr** so they do not interfere with stdout pipelines.
 
 ---
 
@@ -922,7 +976,7 @@ compact_json = false   # true = single-line output
 | `search` | `{term, items: [...], count}` |
 | `trash` | `{items: [...], count, total_bytes}` |
 | `shared` | `{items: [...], count}` |
-| `feed` | `{items: [...], count}` |
+| `feed` | `{items: [...], count}` (one-shot); in `--watch` mode: `{event: "snapshot", items: [...], count}` then `{event: "new", item: {...}}` per new arrival |
 | `mkdir` | `{ok, name, path}` |
 | `upload` | `{uploaded, skipped, failed, errors: [...]}` |
 | `download` | `{downloaded, failed, errors: [...]}` |

@@ -374,7 +374,8 @@ All path arguments accept Degoo paths (e.g. `/Web/folder`) or numeric item IDs u
 | `cligoo shared [-l]` | List shared items (`-l` shows who each item is shared with) |
 | `cligoo share <PATH\|ID> [USER...]` | Share an item |
 | `cligoo unshare <PATH\|ID>` | Remove sharing |
-| `cligoo feed [-n N]` | Activity feed |
+| `cligoo feed [-n N]` | Show the upload feed (last N items, default 30) |
+| `cligoo feed --watch [-i SEC]` | Live-monitor new uploads from any client (polls every SEC seconds, default 30) |
 
 ---
 
