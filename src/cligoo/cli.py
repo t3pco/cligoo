@@ -29,6 +29,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Optional
@@ -2273,44 +2274,154 @@ def unshare(item_id: str, output_format: Optional[str]):
 
 
 # ── Feed ──────────────────────────────────────────────────────────────────────
-@main.command()
-@click.option("-n", "--limit", default=30, help="Max items")
-@_OUTPUT_OPTION
-def feed(limit: int, output_format: Optional[str]):
-    """Show the moments/feed timeline."""
-    client = _client()
+_PLATFORM_LABELS: dict[int, str] = {
+    1: "iOS",
+    2: "Android",
+    3: "Web",
+    4: "Windows",
+    5: "macOS",
+    6: "Linux",
+}
+
+
+def _platform_label(val: Any) -> str:
     try:
-        items = client.get_feed(limit=limit)
-    except DegooAPIError as e:
-        _err(e)
-        raise SystemExit(1)
+        return _PLATFORM_LABELS.get(int(val), str(val)) if val is not None else "—"
+    except (TypeError, ValueError):
+        return str(val)
 
-    if not items:
-        if _want_json(output_format):
-            console.print(_json_output({"items": [], "count": 0}))
-            return
-        console.print("[dim]  Feed is empty.[/dim]")
-        return
 
-    if _want_json(output_format):
-        console.print(_json_output({"items": [_item_json(it) for it in items], "count": len(items)}))
-        return
+def _item_upload_ts(it: dict) -> float:
+    """Return the upload timestamp of an item as a float (0 if missing/unparseable)."""
+    raw = it.get("LastUploadTime") or it.get("CreationTime")
+    if not raw:
+        return 0.0
+    try:
+        # Degoo timestamps are ISO-8601 strings or epoch ints
+        if isinstance(raw, (int, float)):
+            return float(raw)
+        import datetime
 
-    table = Table(title="📸 Feed / Moments", box=box.SIMPLE_HEAVY)
+        return datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _make_feed_table(title: str = "📸 Feed / Moments") -> Table:
+    table = Table(title=title, box=box.SIMPLE_HEAVY)
     table.add_column("ID", style="dim")
     table.add_column("Type", justify="center")
     table.add_column("Name")
-    table.add_column("Date")
+    table.add_column("Size", justify="right")
+    table.add_column("Path", style="dim")
+    table.add_column("Platform", justify="center")
+    table.add_column("Uploaded")
+    return table
 
-    for it in items:
-        cat = it.get("Category", 0)
-        table.add_row(
-            str(it.get("ID", "")),
-            _category_icon(cat),
-            it.get("Name", "?"),
-            _format_time(it.get("CreationTime")),
-        )
-    console.print(table)
+
+def _add_feed_row(table: Table, it: dict) -> None:
+    cat = it.get("Category", 0)
+    table.add_row(
+        str(it.get("ID", "")),
+        _category_icon(cat),
+        it.get("Name", "?"),
+        _humanize_size(it.get("Size")) if cat not in FOLDER_CATEGORIES else "—",
+        it.get("FilePath") or "—",
+        _platform_label(it.get("Platform")),
+        _format_time(it.get("LastUploadTime") or it.get("CreationTime")),
+    )
+
+
+@main.command()
+@click.option("-n", "--limit", default=30, help="Max items to fetch per poll")
+@click.option(
+    "-w",
+    "--watch",
+    is_flag=True,
+    default=False,
+    help="Poll continuously and print new items as they appear (Ctrl-C to stop)",
+)
+@click.option(
+    "-i",
+    "--interval",
+    default=30,
+    show_default=True,
+    help="Seconds between polls in --watch mode",
+)
+@_OUTPUT_OPTION
+def feed(limit: int, watch: bool, interval: int, output_format: Optional[str]):
+    """Show the moments/feed timeline.
+
+    With --watch, polls Degoo every INTERVAL seconds and prints only newly
+    uploaded items as they appear — from any client (iOS, web, cligoo, etc.).
+    Press Ctrl-C to stop.
+    """
+    client = _client()
+    want_json = _want_json(output_format)
+
+    def _fetch() -> list[dict]:
+        try:
+            return client.get_feed(limit=limit)
+        except DegooAPIError as e:
+            _err(e)
+            raise SystemExit(1)
+
+    if not watch:
+        items = _fetch()
+        if not items:
+            if want_json:
+                console.print(_json_output({"items": [], "count": 0}))
+            else:
+                console.print("[dim]  Feed is empty.[/dim]")
+            return
+        if want_json:
+            console.print(_json_output({"items": [_item_json(it) for it in items], "count": len(items)}))
+            return
+        table = _make_feed_table()
+        for it in items:
+            _add_feed_row(table, it)
+        console.print(table)
+        return
+
+    # ── Watch mode ────────────────────────────────────────────────────────────
+    err_console.print(f"[dim]Watching feed (polling every {interval}s) — Ctrl-C to stop[/dim]")
+    seen_ids: set[str] = set()
+    first_poll = True
+    try:
+        while True:
+            items = _fetch()
+            new_items = [it for it in items if str(it.get("ID", "")) not in seen_ids]
+            for it in items:
+                seen_ids.add(str(it.get("ID", "")))
+
+            if first_poll:
+                # On the first poll, show existing items so the user has context,
+                # then tail only new arrivals from this point forward.
+                if want_json:
+                    snapshot = {"event": "snapshot", "items": [_item_json(it) for it in items], "count": len(items)}
+                    err_console.print(_json_output(snapshot))
+                else:
+                    if items:
+                        table = _make_feed_table("📸 Feed snapshot")
+                        for it in items:
+                            _add_feed_row(table, it)
+                        console.print(table)
+                    else:
+                        console.print("[dim]  Feed is empty — waiting for new uploads…[/dim]")
+                first_poll = False
+            elif new_items:
+                if want_json:
+                    for it in new_items:
+                        console.print(_json_output({"event": "new", "item": _item_json(it)}))
+                else:
+                    table = _make_feed_table("📸 New upload(s)")
+                    for it in new_items:
+                        _add_feed_row(table, it)
+                    console.print(table)
+
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        err_console.print("[dim]Stopped.[/dim]")
 
 
 # ── Interactive shell ─────────────────────────────────────────────────────────
