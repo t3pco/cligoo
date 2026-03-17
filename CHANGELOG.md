@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.1.1] — 2026-03-15
 
 ### Added
 
@@ -19,21 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`feed` table enriched**: the one-shot `cligoo feed` table now shows Size, Path,
   Platform (iOS / Android / Web / Windows / macOS / Linux), and upload timestamp
   alongside the existing ID / Type / Name columns.
-
-### Fixed
-
-- **`cligoo login` unnecessary password-endpoint call**: when stored credentials
-  and a valid refresh token were both present, `cligoo login` (no flags) always hit
-  Degoo's email/password endpoint, consuming rate-limit quota unnecessarily. It now
-  tries `get_token()` first (refresh-token path); the password endpoint is only
-  reached if the refresh token has expired.
-
----
-
-## [0.1.1] — 2026-03-15
-
-### Added
-
 - **`--output json` / `-o json`** flag on all commands that benefit from structured output:
   `whoami`, `quota`, `ls`, `tree`, `info`, `search`, `mkdir`, `upload`, `download`,
   `mv`, `cp`, `rename`, `rm`, `trash`, `shared`, `share`, `unshare`, `feed`.
@@ -93,6 +78,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`cligoo login` unnecessary password-endpoint call**: when stored credentials
+  and a valid refresh token were both present, `cligoo login` (no flags) always hit
+  Degoo's email/password endpoint, consuming rate-limit quota unnecessarily. It now
+  tries `get_token()` first (refresh-token path); the password endpoint is only
+  reached if the refresh token has expired.
 - **Token expiry during long-running uploads/downloads**: `_client()` previously
   snapshotted the access token at startup and passed it explicitly to `DegooClient`,
   causing all API calls to fail with auth errors after ~1 hour. `DegooClient` is now
