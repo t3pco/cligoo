@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`cligoo feed --watch`**: new live-monitoring mode — polls the feed every
+  `--interval` seconds (default 30 s) and prints only newly appeared items as they
+  arrive from any client (iOS, Android, web, cligoo, …). First poll shows a
+  snapshot for context; subsequent polls emit only new rows. Works with
+  `--output json` for scripted pipelines (`cligoo feed --watch -o json | jq …`).
+- **`feed` table enriched**: the one-shot `cligoo feed` table now shows Size, Path,
+  Platform (iOS / Android / Web / Windows / macOS / Linux), and upload timestamp
+  alongside the existing ID / Type / Name columns.
+
+### Fixed
+
+- **`cligoo login` unnecessary password-endpoint call**: when stored credentials
+  and a valid refresh token were both present, `cligoo login` (no flags) always hit
+  Degoo's email/password endpoint, consuming rate-limit quota unnecessarily. It now
+  tries `get_token()` first (refresh-token path); the password endpoint is only
+  reached if the refresh token has expired.
+
 ---
 
 ## [0.1.1] — 2026-03-15
