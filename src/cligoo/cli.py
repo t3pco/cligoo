@@ -2313,10 +2313,28 @@ def _make_feed_table(title: str = "📸 Feed / Moments") -> Table:
     table.add_column("Type", justify="center")
     table.add_column("Name")
     table.add_column("Size", justify="right")
-    table.add_column("Path", style="dim")
+    # FilePath is the local device path at upload time, not the Degoo cloud path
+    table.add_column("Source path", style="dim")
     table.add_column("Platform", justify="center")
-    table.add_column("Uploaded")
+    # LastUploadTime is often absent for legacy mobile uploads; CreationTime
+    # (original file/photo date) is used as a fallback — hence "Date" not "Uploaded"
+    table.add_column("Date")
     return table
+
+
+def _feed_date(it: dict) -> str:
+    """Return the best available date for a feed item.
+
+    ``LastUploadTime`` is the actual Degoo upload timestamp when present.
+    For legacy iOS/Android uploads it is often absent or zero, in which case
+    ``CreationTime`` (original photo/file capture date) is used as a fallback.
+    The column is labelled "Date" rather than "Uploaded" to reflect this.
+    """
+    upload_ts = it.get("LastUploadTime")
+    # Treat zero / empty string as absent
+    if upload_ts and str(upload_ts) not in ("0", ""):
+        return _format_time(upload_ts)
+    return _format_time(it.get("CreationTime"))
 
 
 def _add_feed_row(table: Table, it: dict) -> None:
@@ -2328,7 +2346,7 @@ def _add_feed_row(table: Table, it: dict) -> None:
         _humanize_size(it.get("Size")) if cat not in FOLDER_CATEGORIES else "—",
         it.get("FilePath") or "—",
         _platform_label(it.get("Platform")),
-        _format_time(it.get("LastUploadTime") or it.get("CreationTime")),
+        _feed_date(it),
     )
 
 

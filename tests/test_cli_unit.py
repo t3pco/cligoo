@@ -1121,16 +1121,21 @@ def test_feed_with_items():
     mock.get_feed.return_value = [
         {
             "ID": "555",
-            "Name": "2023-01-01.jpg",
+            "Name": "photo.jpg",
             "Category": 6,
             "Size": "1024000",
+            "Platform": 1,
+            "LastUploadTime": "2024-06-15T08:30:00Z",
             "CreationTime": "2023-01-01T10:00:00Z",
         },
     ]
     with _patch_client(mock):
         result = _runner().invoke(main, ["feed"])
     assert result.exit_code == 0, result.output
-    assert "2023-01-01.jpg" in result.output
+    # ID and platform label must appear; LastUploadTime takes precedence over CreationTime
+    assert "555" in result.output
+    assert "iOS" in result.output
+    assert "2024-06-15" in result.output
 
 
 def test_feed_api_error():
