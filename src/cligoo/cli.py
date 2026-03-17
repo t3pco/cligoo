@@ -358,12 +358,20 @@ def login(email: Optional[str], password: Optional[str], browser: bool):
     saved_email, saved_password = get_saved_credentials()
 
     if not email and not password:
-        # No flags — use stored credentials silently when both are available
+        # No flags — try refresh token first to avoid hitting the password endpoint
         if saved_email and saved_password:
+            from .auth import get_token as _get_token
+
+            console.print(f"  Signing in as [bold]{saved_email}[/bold] using stored credentials…")
+            console.print("  [dim]Pass --email to sign in with a different account.[/dim]")
+            try:
+                _get_token()
+                console.print(f"[green]✓[/green] Signed in as [bold]{saved_email}[/bold]. Token refreshed.")
+                return
+            except AuthError:
+                pass  # refresh token expired or missing — fall through to password login
             email = saved_email
             password = saved_password
-            console.print(f"  Signing in as [bold]{email}[/bold] using stored credentials…")
-            console.print("  [dim]Pass --email to sign in with a different account.[/dim]")
         else:
             # Partially missing — prompt for what we need
             email = click.prompt("Email", default=saved_email) if saved_email else click.prompt("Email")

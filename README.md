@@ -59,6 +59,20 @@ make install-browser  # add Playwright for Google OAuth login
 make install-dev      # editable install for development
 ```
 
+**Alternative — install directly with pip** (uses your active Python / pyenv version):
+
+```bash
+pip install git+https://github.com/marcomc/cligoo.git
+```
+
+**Uninstalling:**
+
+| Install method | Uninstall command |
+| --- | --- |
+| `make install` | `make uninstall` |
+| `make install-dev` | `make uninstall-dev` |
+| `pip install` | `pip uninstall cligoo` |
+
 **Requirements:** Python 3.9+
 
 ---
@@ -271,7 +285,7 @@ Stored credentials enable fully transparent operation:
 Run `cligoo logout` to remove all stored tokens and credentials from the keyring.
 
 > **Upgrading from degoo-cli?** Credentials and tokens previously saved under the `degoo-cli` keyring service are detected and migrated to `cligoo` automatically on first use — no manual steps needed.
-
+>
 > **Account created via Google / Apple / Facebook?** Your account has no
 > password set. You can create one (or reset a forgotten one) at
 > <https://degoo.com/forgotpassword> — enter your Degoo email and follow the

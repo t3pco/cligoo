@@ -23,8 +23,8 @@ TOKEN_DIR     ?= $(CONFIG_DIR)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check-deps venv _install-venv install install-dev install-browser \
-        install-config reconfigure uninstall reinstall lint fmt test run clean
+.PHONY: help check-deps venv _install-venv install install-dev uninstall-dev \
+        install-browser install-config reconfigure uninstall reinstall lint fmt test run clean
 
 help: ## Show available targets
 	@awk 'BEGIN { FS = ":.*##" } /^[a-zA-Z_-]+:.*##/ { printf "  %-20s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -89,6 +89,21 @@ install-dev: check-deps venv ## Editable dev install — code changes take effec
 	@ln -sf "$(CURDIR)/$(VENV)/bin/$(INSTALL_NAME)" "$(INSTALL_PATH)"
 	@echo "✓ Dev install active: edits to src/ take effect immediately"
 	@echo "  Run 'make install' to switch back to the standalone install"
+
+uninstall-dev: ## Remove the dev-install symlink (keeps .venv for tests/lint); switches to standalone install if present
+	@if [ -L "$(INSTALL_PATH)" ] && \
+	   [ "$$(readlink "$(INSTALL_PATH)")" = "$(CURDIR)/$(VENV)/bin/$(INSTALL_NAME)" ]; then \
+		rm -f "$(INSTALL_PATH)"; \
+		echo "✓ Removed dev symlink $(INSTALL_PATH)"; \
+		if [ -x "$(INSTALL_VENV)/bin/$(INSTALL_NAME)" ]; then \
+			ln -sf "$(INSTALL_VENV)/bin/$(INSTALL_NAME)" "$(INSTALL_PATH)"; \
+			echo "✓ Switched back to standalone install at $(INSTALL_PATH)"; \
+		else \
+			echo "  No standalone install found — run 'make install' to install one"; \
+		fi; \
+	else \
+		echo "⚠ $(INSTALL_PATH) is not the dev symlink — nothing to do"; \
+	fi
 
 install-browser: check-deps _install-venv ## Install Playwright browser support into the standalone install venv
 	@"$(INSTALL_PIP)" install ".[browser]" --quiet
