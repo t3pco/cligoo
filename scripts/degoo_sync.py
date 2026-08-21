@@ -62,10 +62,13 @@ def log(level: str, msg: str, **kwargs: Any) -> None:
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     extras = " ".join(f'{k}="{v}"' if isinstance(v, str) and (" " in v or not v) else f"{k}={v}" for k, v in kwargs.items())
     log_line = f"[{timestamp}] level={level.upper()} msg={msg!r} {extras}".rstrip()
+    
+    # Use rich consoles so logs cleanly flow above the active progress bar
+    # markup=False and highlight=False prevent rich from misinterpreting filenames as formatting tags
     if level.upper() in ("ERROR", "FATAL"):
-        print(log_line, file=sys.stderr, flush=True)
+        err_console.print(log_line, markup=False, highlight=False)
     else:
-        print(log_line, flush=True)
+        console.print(log_line, markup=False, highlight=False)
 
 
 # ── Step 1: Local Filesystem Scan ────────────────────────────────────────────
@@ -269,7 +272,10 @@ def _upload_single_file(
             progress.advance(overall_task_id, remaining)
         if progress and task_id is not None:
             progress.remove_task(task_id)
+            
+        log("INFO", "File uploaded", file=target_name, size_bytes=file_size)
         return True
+        
     except DegooAlreadyExistsError:
         # File content already exists on Degoo (dedup) — count as success
         remaining = file_size - last_uploaded[0]
@@ -277,7 +283,10 @@ def _upload_single_file(
             progress.advance(overall_task_id, remaining)
         if progress and task_id is not None:
             progress.remove_task(task_id)
+            
+        log("INFO", "File deduplicated (already exists)", file=target_name, size_bytes=file_size)
         return True
+        
     except Exception as e:
         if progress and task_id is not None:
             progress.remove_task(task_id)
@@ -418,9 +427,12 @@ def main() -> None:
         BATCH_SIZE = 100
         for i in range(0, len(delete_ids), BATCH_SIZE):
             chunk = delete_ids[i : i + BATCH_SIZE]
+            chunk_paths = [path for path, _, _ in to_delete[i : i + BATCH_SIZE]]
             try:
                 client.delete(chunk, permanent=True)
                 deleted_count += len(chunk)
+                for p in chunk_paths:
+                    log("INFO", "File deleted", file=p)
             except DegooAPIError as e:
                 log("WARN", "Warning during batch deletion", error=str(e))
 
