@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import time
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from .auth import get_token
 from .constants import (
@@ -173,7 +176,11 @@ class DegooClient:
         last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
             if attempt > 0:
-                time.sleep(min(2 ** (attempt - 1), 8))
+                backoff = min(2 ** (attempt - 1), 8)
+                logger.warning(
+                    f"GraphQL API request failed, retrying ({attempt}/{max_retries}) after {backoff}s backoff. Error: {last_exc}"
+                )
+                time.sleep(backoff)
 
             try:
                 resp = self._http.post(self._graphql_url, json=body)
@@ -637,6 +644,9 @@ class DegooClient:
         for attempt in range(max(1, upload_retries + 1)):
             if attempt > 0:
                 backoff = min(2 ** (attempt - 1), 30)
+                logger.warning(
+                    f"File upload to GCS failed, retrying ({attempt}/{upload_retries}) after {backoff}s backoff. Error: {last_exc}"
+                )
                 time.sleep(backoff)
 
             pf: Any = None
