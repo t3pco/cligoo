@@ -16,6 +16,8 @@ A command-line interface for [Degoo](https://degoo.com) cloud storage, built on 
 ## Table of Contents
 
 - [Installation](#installation)
+  - [Standalone or pip](#standalone-or-pip)
+  - [Docker](#docker)
 - [Quick Start](#quick-start)
 - [Common Workflows](#common-workflows)
   - [Browsing your cloud storage](#browsing-your-cloud-storage)
@@ -43,6 +45,8 @@ A command-line interface for [Degoo](https://degoo.com) cloud storage, built on 
 ---
 
 ## Installation
+
+### Standalone or pip
 
 ```bash
 git clone https://github.com/your-username/cligoo.git
@@ -74,6 +78,55 @@ pip install git+https://github.com/marcomc/cligoo.git
 | `pip install` | `pip uninstall cligoo` |
 
 **Requirements:** Python 3.9+
+
+### Docker
+
+You can run `cligoo` in a container without installing Python locally.
+
+#### Running Always-On Container for Backups
+
+To run the container continuously in the background (e.g. for scheduled backups or running scripts):
+
+```bash
+# Start container in background with docker compose
+docker compose up -d
+
+# Execute a command in the running container
+docker compose exec cligoo cligoo whoami
+
+# Run a backup script inside the container
+docker compose exec cligoo /scripts/backup-example.sh
+```
+
+#### One-off CLI Execution
+
+```bash
+# Run any command directly (mount ~/.config/cligoo to persist login tokens)
+docker run --rm \
+  -v ~/.config/cligoo:/home/cligoo/.config/cligoo \
+  -v $(pwd):/data \
+  ghcr.io/marcomc/cligoo:latest whoami
+
+# Interactive login
+docker run -it --rm \
+  -v ~/.config/cligoo:/home/cligoo/.config/cligoo \
+  -v $(pwd):/data \
+  ghcr.io/marcomc/cligoo:latest login
+
+# Run interactive shell
+docker run -it --rm \
+  -v ~/.config/cligoo:/home/cligoo/.config/cligoo \
+  -v $(pwd):/data \
+  ghcr.io/marcomc/cligoo:latest shell
+```
+
+#### Building Locally
+
+```bash
+# Build the Docker image
+make docker-build
+# or: docker build -t cligoo .
+```
 
 ---
 

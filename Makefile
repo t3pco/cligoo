@@ -24,7 +24,8 @@ TOKEN_DIR     ?= $(CONFIG_DIR)
 .DEFAULT_GOAL := help
 
 .PHONY: help check-deps venv _install-venv install install-dev uninstall-dev \
-        install-browser install-config reconfigure uninstall reinstall lint fmt test run clean
+        install-browser install-config reconfigure uninstall reinstall lint fmt test run clean \
+        docker-build docker-run
 
 help: ## Show available targets
 	@awk 'BEGIN { FS = ":.*##" } /^[a-zA-Z_-]+:.*##/ { printf "  %-20s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -199,3 +200,13 @@ clean: ## Remove dev venv and build artifacts (standalone install is unaffected)
 	find . -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 	@echo "✓ Cleaned build artifacts"
 	@echo "  Standalone install at $(INSTALL_PATH) unaffected — use 'make uninstall' to remove it"
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+docker-build: ## Build the cligoo Docker image locally
+	docker build -t cligoo .
+
+docker-run: ## Run cligoo inside Docker with ~/.config/cligoo and current directory mounted
+	docker run -it --rm \
+		-v "$(CONFIG_DIR):/home/cligoo/.config/cligoo" \
+		-v "$$(pwd):/data" \
+		cligoo $(ARGS)

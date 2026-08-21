@@ -1,0 +1,19 @@
+services:
+  cligoo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/marcomc/cligoo:latest
+    container_name: cligoo
+    restart: unless-stopped
+    command: daemon
+    environment:
+      - DEGOO_API_KEY=${DEGOO_API_KEY:-}
+      - TZ=UTC
+    volumes:
+      # Persist configuration and authentication tokens
+      - ${HOME}/.config/cligoo:/home/cligoo/.config/cligoo
+      # Directory containing files/folders you want to backup
+      - ./data:/data
+      # Directory for custom backup scripts
+      - ./scripts:/scripts:ro
