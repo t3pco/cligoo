@@ -11,3 +11,5 @@ build/
 .DS_Store
 .playwright-cli/
 donotsync/
+data/
+cligoo-config/

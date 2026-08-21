@@ -1,18 +1,14 @@
 services:
   cligoo:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ghcr.io/marcomc/cligoo:latest
+    image: ghcr.io/t3pco/cligoo:feature-add-docker-support
     container_name: cligoo
     restart: unless-stopped
-    command: daemon
+    command: python /scripts/schedule_sync.py /data/kopia /Backup/kopia
     environment:
-      - DEGOO_API_KEY=${DEGOO_API_KEY:-}
-      - TZ=UTC
+      - TZ=Europe/Berlin
     volumes:
       # Persist configuration and authentication tokens
-      - ${HOME}/.config/cligoo:/home/cligoo/.config/cligoo
+      - ./cligoo-config/cligoo:/home/cligoo/.config/cligoo
       # Directory containing files/folders you want to backup
       - ./data:/data
       # Directory for custom backup scripts
