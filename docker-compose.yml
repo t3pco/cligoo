@@ -3,7 +3,7 @@ services:
     image: ghcr.io/t3pco/cligoo:feature-add-docker-support
     container_name: cligoo
     restart: unless-stopped
-    command: python /scripts/schedule_sync.py /data/kopia /Backup/kopia
+    command: python /scripts/schedule_sync.py
     environment:
       - TZ=Europe/Berlin
     volumes:

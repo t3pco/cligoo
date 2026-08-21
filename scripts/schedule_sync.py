@@ -16,8 +16,16 @@ import sys
 import time
 from pathlib import Path
 
+# ── Backup Configuration ──────────────────────────────────────────────────────
+LOCAL_SOURCE_DIR = "/data"
+REMOTE_TARGET_DIR = "/Test"
+
+# Run an extra sync run immediately on container startup (for testing/initial sync)
+# Set to False if you ONLY want it to run at 01:00 and 13:00 without startup run.
+RUN_ON_STARTUP = True
+
 # Fixed daily execution hours: 01:00 and 13:00 (1am & 1pm)
-SCHEDULE_HOURS = [1, 13]
+SCHEDULE_HOURS = [1]
 
 
 def log(level: str, msg: str, **kwargs: object) -> None:
@@ -71,18 +79,25 @@ def run_sync(sync_script: Path, source_dir: str, target_dir: str) -> None:
 
 
 def main() -> None:
-    source_dir = sys.argv[1] if len(sys.argv) > 1 else "/data/kopia"
-    target_dir = sys.argv[2] if len(sys.argv) > 2 else "/Backup/kopia"
+    source_dir = sys.argv[1] if len(sys.argv) > 1 else LOCAL_SOURCE_DIR
+    target_dir = sys.argv[2] if len(sys.argv) > 2 else REMOTE_TARGET_DIR
 
     sync_script = Path(__file__).resolve().parent / "degoo_sync.py"
 
-    log("INFO", "Degoo 12-hour scheduler initialized", schedule="01:00,13:00", source=source_dir, target=target_dir)
+    log(
+        "INFO",
+        "Degoo sync scheduler initialized",
+        source=source_dir,
+        target=target_dir,
+        run_on_startup=RUN_ON_STARTUP,
+    )
 
-    # 1. Initial startup sync
-    log("INFO", "Executing initial startup sync")
-    run_sync(sync_script, source_dir, target_dir)
+    # 1. Optional extra startup run
+    if RUN_ON_STARTUP:
+        log("INFO", "Executing startup sync (RUN_ON_STARTUP=True)")
+        run_sync(sync_script, source_dir, target_dir)
 
-    # 2. Main schedule loop
+    # 2. Main schedule loop: sleep until next 01:00 or 13:00
     while True:
         delay_seconds, next_run = get_seconds_until_next_run()
         log(
