@@ -44,12 +44,12 @@ from rich.table import Table
 
 # Import cligoo API client
 try:
-    from cligoo.api import DegooAPIError, DegooClient
+    from cligoo.api import DegooAlreadyExistsError, DegooAPIError, DegooClient
     from cligoo.constants import FOLDER_CATEGORIES
 except ImportError:
     # Allow running directly from repository root
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-    from cligoo.api import DegooAPIError, DegooClient
+    from cligoo.api import DegooAlreadyExistsError, DegooAPIError, DegooClient
     from cligoo.constants import FOLDER_CATEGORIES
 
 is_tty = sys.stdout.isatty()
@@ -264,6 +264,14 @@ def _upload_single_file(
             progress_callback=progress_cb,
             upload_retries=5,
         )
+        remaining = file_size - last_uploaded[0]
+        if progress and overall_task_id is not None and remaining > 0:
+            progress.advance(overall_task_id, remaining)
+        if progress and task_id is not None:
+            progress.remove_task(task_id)
+        return True
+    except DegooAlreadyExistsError:
+        # File content already exists on Degoo (dedup) — count as success
         remaining = file_size - last_uploaded[0]
         if progress and overall_task_id is not None and remaining > 0:
             progress.advance(overall_task_id, remaining)

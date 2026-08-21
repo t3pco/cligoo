@@ -157,7 +157,11 @@ class DegooClient:
         return self._token
 
     def _gql(self, query: str, variables: dict[str, Any] | None = None, operation: str | None = None) -> Any:
-        """Send a GraphQL request and return the ``data`` payload."""
+        """Send a GraphQL request and return the ``data`` payload.
+
+        Retries up to 3 times on transient server errors (HTTP 502/503/504)
+        with exponential backoff (1s, 2s, 4s).
+        """
         variables = variables or {}
         variables["Token"] = self.token
 
@@ -165,8 +169,31 @@ class DegooClient:
         if operation:
             body["operationName"] = operation
 
-        resp = self._http.post(self._graphql_url, json=body)
-        resp.raise_for_status()
+        max_retries = 3
+        last_exc: Exception | None = None
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                time.sleep(min(2 ** (attempt - 1), 8))
+
+            try:
+                resp = self._http.post(self._graphql_url, json=body)
+            except httpx.RequestError as exc:
+                last_exc = exc
+                continue  # network error — retry
+
+            if resp.status_code >= 500:
+                last_exc = DegooAPIError(
+                    f"Server error '{resp.status_code} {resp.reason_phrase}' "
+                    f"for url '{resp.url}'"
+                )
+                continue  # transient 5xx — retry
+
+            resp.raise_for_status()
+            break
+        else:
+            # All retries exhausted
+            raise last_exc or DegooAPIError("GraphQL request failed after retries")
+
         payload = resp.json()
 
         if "errors" in payload:
