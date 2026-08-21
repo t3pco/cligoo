@@ -182,10 +182,7 @@ class DegooClient:
                 continue  # network error — retry
 
             if resp.status_code >= 500:
-                last_exc = DegooAPIError(
-                    f"Server error '{resp.status_code} {resp.reason_phrase}' "
-                    f"for url '{resp.url}'"
-                )
+                last_exc = DegooAPIError(f"Server error '{resp.status_code} {resp.reason_phrase}' for url '{resp.url}'")
                 continue  # transient 5xx — retry
 
             resp.raise_for_status()
