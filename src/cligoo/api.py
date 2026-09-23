@@ -111,6 +111,7 @@ class DegooClient:
         self._min_request_interval = min_request_interval
         self._rl_lock = threading.Lock()
         self._rl_last: float = 0.0
+        self._rl_pause_until: float = 0.0
 
         # Copy DEFAULT_HEADERS so httpx normalisation (lower-casing keys etc.)
         # never mutates the shared module-level dict.
@@ -171,23 +172,15 @@ class DegooClient:
     def _gql(self, query: str, variables: dict[str, Any] | None = None, operation: str | None = None) -> Any:
         """Send a GraphQL request and return the ``data`` payload.
 
-        Retries up to 3 times on transient server errors (HTTP 502/503/504)
-        and HTTP 429 (rate limited) with exponential backoff (1s, 2s, 4s).
-        HTTP 429 additionally honours the ``Retry-After`` response header.
+        Retries on transient server errors (HTTP 502/503/504) and HTTP 429
+        (rate limited). HTTP 429 honours the ``Retry-After`` response header
+        and enforces a process-wide cooldown across all worker threads so
+        other threads do not bombard the API while it is rate-limited.
 
         When *min_request_interval* is set on the client, a thread-safe gate
         enforces a minimum time between consecutive calls so that concurrent
         upload workers don't burst-flood the Degoo GraphQL endpoint.
         """
-        # ── Rate limiter gate ──────────────────────────────────────────────
-        if self._min_request_interval > 0.0:
-            with self._rl_lock:
-                now = time.monotonic()
-                wait = self._min_request_interval - (now - self._rl_last)
-                if wait > 0:
-                    time.sleep(wait)
-                self._rl_last = time.monotonic()
-
         variables = variables or {}
         variables["Token"] = self.token
 
@@ -195,45 +188,83 @@ class DegooClient:
         if operation:
             body["operationName"] = operation
 
-        max_retries = 3
+        max_transient_retries = 3
+        max_429_retries = 10
+        transient_attempts = 0
+        rate_limit_attempts = 0
         last_exc: Exception | None = None
-        for attempt in range(max_retries + 1):
-            if attempt > 0:
-                backoff = min(2 ** (attempt - 1), 8)
-                logger.warning(
-                    f"GraphQL API request failed, retrying ({attempt}/{max_retries}) after {backoff}s backoff. Error: {last_exc}"
-                )
-                time.sleep(backoff)
+
+        while True:
+            # ── Rate limiter & Global 429 Pause Gate ───────────────────────
+            while True:
+                with self._rl_lock:
+                    now = time.monotonic()
+                    if self._rl_pause_until > now:
+                        wait_cooldown = self._rl_pause_until - now
+                    else:
+                        wait_cooldown = 0.0
+                        if self._min_request_interval > 0.0:
+                            wait = self._min_request_interval - (now - self._rl_last)
+                            if wait > 0:
+                                time.sleep(wait)
+                        self._rl_last = time.monotonic()
+                        break
+
+                if wait_cooldown > 0:
+                    time.sleep(min(wait_cooldown, 5.0))
 
             try:
                 resp = self._http.post(self._graphql_url, json=body)
             except httpx.RequestError as exc:
                 last_exc = exc
-                continue  # network error — retry
+                transient_attempts += 1
+                if transient_attempts > max_transient_retries:
+                    raise last_exc
+                backoff = min(2 ** (transient_attempts - 1), 8)
+                logger.warning(
+                    f"GraphQL API request failed, retrying ({transient_attempts}/{max_transient_retries}) after {backoff}s backoff. Error: {last_exc}"
+                )
+                time.sleep(backoff)
+                continue
 
             if resp.status_code == 429:
+                rate_limit_attempts += 1
                 retry_after = resp.headers.get("Retry-After")
                 if retry_after is not None:
                     try:
                         backoff = float(retry_after)
                     except ValueError:
-                        backoff = min(2 ** attempt, 60)
+                        backoff = min(2 ** rate_limit_attempts, 60.0)
                 else:
-                    backoff = min(2 ** attempt, 60)
+                    backoff = min(2 ** rate_limit_attempts, 60.0)
+
+                # Broadcast cooldown to ALL threads so no worker hits Degoo during the ban
+                with self._rl_lock:
+                    self._rl_pause_until = max(self._rl_pause_until, time.monotonic() + backoff + 1.0)
+
                 last_exc = DegooAPIError(f"Rate limited (HTTP 429) — waiting {backoff:.1f}s before retry")
-                logger.warning(str(last_exc))
-                time.sleep(backoff)
+                logger.warning(
+                    f"Rate limited (HTTP 429) [attempt {rate_limit_attempts}/{max_429_retries}] — pausing all workers for {backoff:.1f}s"
+                )
+                if rate_limit_attempts > max_429_retries:
+                    raise last_exc
+                time.sleep(backoff + 1.0)
                 continue
 
             if resp.status_code >= 500:
+                transient_attempts += 1
                 last_exc = DegooAPIError(f"Server error '{resp.status_code} {resp.reason_phrase}' for url '{resp.url}'")
-                continue  # transient 5xx — retry
+                if transient_attempts > max_transient_retries:
+                    raise last_exc
+                backoff = min(2 ** (transient_attempts - 1), 8)
+                logger.warning(
+                    f"GraphQL API request failed, retrying ({transient_attempts}/{max_transient_retries}) after {backoff}s backoff. Error: {last_exc}"
+                )
+                time.sleep(backoff)
+                continue
 
             resp.raise_for_status()
             break
-        else:
-            # All retries exhausted
-            raise last_exc or DegooAPIError("GraphQL request failed after retries")
 
         payload = resp.json()
 
@@ -247,6 +278,7 @@ class DegooClient:
                 "API returned null data — your token may be expired or invalid. Run `degoo login` to re-authenticate."
             )
         return data
+
 
     def _paginate(
         self,
@@ -675,7 +707,10 @@ class DegooClient:
         form_data["signature"] = auth_data["Signature"]
         # GCS key format (required by the policy): {KeyPrefix}{ext}/{checksum}.{ext}
         # e.g. "ADfzPh/6tnxDg/pdf/ChQVgjMd4f9UAnRnJNB8-dCTOpsPLBAA.pdf"
-        ext = Path(filename).suffix.lstrip(".").lower() or "bin"
+        # Note: for dotfiles like .shards, Degoo expects 'shards', not 'bin'
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
+        if not ext:
+            ext = "bin"
         form_data["key"] = f"{key_prefix}{ext}/{checksum}.{ext}"
         form_data["Content-Type"] = content_type
         if auth_data.get("ACL"):

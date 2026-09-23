@@ -14,7 +14,7 @@ Sections
 [session]
     login_method      : "browser" | "password" — default login flow
     chrome_profile    : str  — Chrome profile dir name for browser login
-    transfer_workers  : int  — Concurrent upload/download threads (default 20)
+    transfer_workers  : int  — Concurrent upload/download threads (default 4)
     auto_relogin      : bool — Re-login on token expiry (default true)
     default_upload_dir: str  — Default remote destination for uploads (default "/Web")
     upload_retries    : int  — Retry attempts for failed GCS uploads (default 5)
@@ -195,12 +195,12 @@ def get_api_key() -> Optional[str]:
 
 
 def get_transfer_workers() -> int:
-    """Return the configured number of concurrent transfer workers (default 20)."""
-    value = load_config().get("transfer_workers", 20)
+    """Return the configured number of concurrent transfer workers (default 4)."""
+    value = load_config().get("transfer_workers", 4)
     try:
         return max(1, int(value))
     except (TypeError, ValueError):
-        return 20
+        return 4
 
 
 def get_api_timeout() -> float:

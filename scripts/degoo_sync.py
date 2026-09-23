@@ -42,15 +42,13 @@ from rich.progress import (
 )
 from rich.table import Table
 
-# Import cligoo API client
-try:
-    from cligoo.api import DegooAlreadyExistsError, DegooAPIError, DegooClient
-    from cligoo.constants import FOLDER_CATEGORIES
-except ImportError:
-    # Allow running directly from repository root
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-    from cligoo.api import DegooAlreadyExistsError, DegooAPIError, DegooClient
-    from cligoo.constants import FOLDER_CATEGORIES
+# Import cligoo API client (prefer local repository /app/src or ../src if present)
+for _src_dir in ("/app/src", str(Path(__file__).resolve().parent.parent / "src")):
+    if Path(_src_dir).is_dir() and _src_dir not in sys.path:
+        sys.path.insert(0, _src_dir)
+
+from cligoo.api import DegooAlreadyExistsError, DegooAPIError, DegooClient
+from cligoo.constants import FOLDER_CATEGORIES
 
 is_tty = sys.stdout.isatty()
 console = Console(force_terminal=is_tty, no_color=not is_tty)
@@ -318,9 +316,9 @@ def main() -> None:
     parser.add_argument(
         "--delay",
         type=float,
-        default=0.1,
+        default=1.0,
         metavar="SECONDS",
-        help="Minimum interval between consecutive Degoo API calls (default: 0.1 s). "
+        help="Minimum interval between consecutive Degoo API calls (default: 1.0 s). "
              "Increase this if you still hit HTTP 429 rate-limit errors.",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
@@ -448,12 +446,13 @@ def main() -> None:
             chunk = delete_ids[i : i + BATCH_SIZE]
             chunk_paths = [path for path, _, _ in to_delete[i : i + BATCH_SIZE]]
             try:
-                client.delete(chunk, permanent=True)
+                client.delete(chunk, permanent=False)
                 deleted_count += len(chunk)
                 for p in chunk_paths:
                     log("INFO", "File deleted", file=p)
             except DegooAPIError as e:
                 log("WARN", "Warning during batch deletion", error=str(e))
+            time.sleep(0.2)
 
     # 6. Delete old items that need to be updated
     if to_update:
@@ -461,9 +460,10 @@ def main() -> None:
         for i in range(0, len(replace_ids), 100):
             chunk = replace_ids[i : i + 100]
             try:
-                client.delete(chunk, permanent=True)
+                client.delete(chunk, permanent=False)
             except DegooAPIError:
                 pass
+            time.sleep(0.2)
 
     # 7. Execute Parallel Transfers
     all_upload_tasks: List[Tuple[Path, str, str, int]] = []

@@ -191,7 +191,7 @@ cligoo ls          # lists /Web/Photos (cwd used automatically)
 ### Uploading files and folders
 
 Multiple files and directories can be transferred in a single command.
-Transfers run in parallel (default 20 workers, configurable via `transfer_workers` in `~/.config/cligoo/config.toml`).
+Transfers run in parallel (default 4 workers, configurable via `transfer_workers` in `~/.config/cligoo/config.toml`).
 
 ```bash
 # Upload a single file to a specific folder

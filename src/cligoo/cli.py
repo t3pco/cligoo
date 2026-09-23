@@ -1253,7 +1253,7 @@ def _resolve_parent_id(client: "DegooClient", parent_path: Optional[str]) -> str
 
 
 def _get_workers(override: Optional[int]) -> int:
-    """Return the worker count: command option → config file → built-in default (20)."""
+    """Return the worker count: command option → config file → built-in default (4)."""
     if override is not None:
         return max(1, override)
     return get_transfer_workers()

@@ -11,21 +11,24 @@ Outputs clean logfmt logs for Loki & Grafana monitoring.
 from __future__ import annotations
 
 import datetime
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 # ── Backup Configuration ──────────────────────────────────────────────────────
-LOCAL_SOURCE_DIR = "/data"
-REMOTE_TARGET_DIR = "/Test"
+LOCAL_SOURCE_DIR = os.environ.get("SYNC_SOURCE", "/data")
+REMOTE_TARGET_DIR = os.environ.get("SYNC_TARGET", "/Test")
+WORKERS = int(os.environ.get("SYNC_WORKERS", os.environ.get("WORKERS", "4")))
+DELAY = float(os.environ.get("SYNC_DELAY", os.environ.get("DELAY", "1.0")))
 
 # Run an extra sync run immediately on container startup (for testing/initial sync)
-# Set to False if you ONLY want it to run at 01:00 and 13:00 without startup run.
-RUN_ON_STARTUP = True
+RUN_ON_STARTUP = os.environ.get("RUN_ON_STARTUP", "true").lower() in ("true", "1", "yes")
 
-# Fixed daily execution hours: 01:00 and 13:00 (1am & 1pm)
-SCHEDULE_HOURS = [1]
+# Fixed daily execution hours: default 01:00 and 13:00 (1am & 1pm)
+_hours_env = os.environ.get("SCHEDULE_HOURS", "1,13")
+SCHEDULE_HOURS = [int(h.strip()) for h in _hours_env.split(",") if h.strip()]
 
 
 def log(level: str, msg: str, **kwargs: object) -> None:
@@ -61,12 +64,20 @@ def run_sync(sync_script: Path, source_dir: str, target_dir: str) -> None:
     cmd = [
         sys.executable,
         str(sync_script),
-        "--workers", "20",
+        "--workers", str(WORKERS),
+        "--delay", str(DELAY),
         "--delete",
         source_dir,
         target_dir,
     ]
-    log("INFO", "Scheduled sync job started", source=source_dir, target=target_dir)
+    log(
+        "INFO",
+        "Scheduled sync job started",
+        source=source_dir,
+        target=target_dir,
+        workers=WORKERS,
+        delay=DELAY,
+    )
 
     start = time.time()
     res = subprocess.run(cmd)
@@ -89,7 +100,10 @@ def main() -> None:
         "Degoo sync scheduler initialized",
         source=source_dir,
         target=target_dir,
+        workers=WORKERS,
+        delay=DELAY,
         run_on_startup=RUN_ON_STARTUP,
+        schedule_hours=SCHEDULE_HOURS,
     )
 
     # 1. Optional extra startup run

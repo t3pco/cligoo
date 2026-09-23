@@ -751,7 +751,7 @@ standalone_nav = false                        # Allow cd/pwd outside the shell (
 | --- | --- | --- |
 | `login_method` | `null` | `"password"` or `"browser"`. `null` = prompt on each `cligoo login` |
 | `chrome_profile` | `null` | Chrome profile dir name for `--browser` login. `null` = fresh temporary profile |
-| `transfer_workers` | `20` | Concurrent threads for parallel upload/download. Override per-command with `--workers N` |
+| `transfer_workers` | `4` | Concurrent threads for parallel upload/download. Override per-command with `--workers N` |
 | `auto_relogin` | `true` | Silently re-authenticate using saved credentials when the access token expires |
 | `default_upload_dir` | `"/Web"` | Default remote destination when `--dest` is omitted from `cligoo upload` |
 | `upload_retries` | `5` | Retry attempts for failed GCS uploads (network errors and 5xx). Set `0` to disable. Exponential backoff: 1 s, 2 s, 4 s … max 30 s |

@@ -1,11 +1,14 @@
 services:
   cligoo:
     image: ghcr.io/t3pco/cligoo:feature-add-docker-support
+    # build: .  # Uncomment to build from local sources instead of pulling the image
     container_name: cligoo
     restart: unless-stopped
     command: python /scripts/schedule_sync.py
     environment:
       - TZ=Europe/Berlin
+      - WORKERS=4
+      - DELAY=1.0
     volumes:
       # Persist configuration and authentication tokens
       - ./cligoo-config/cligoo:/home/cligoo/.config/cligoo
@@ -13,3 +16,5 @@ services:
       - ./data:/data
       # Directory for custom backup scripts
       - ./scripts:/scripts:ro
+      # Mount application sources so local optimizations are immediately active
+      - ./src:/app/src:ro

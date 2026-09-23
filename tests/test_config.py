@@ -343,3 +343,23 @@ def test_get_upload_retries_invalid_returns_default(isolated_config, tmp_path):
     from cligoo.config import get_upload_retries
 
     assert get_upload_retries() == 5
+
+
+def test_get_transfer_workers_default(isolated_config):
+    from cligoo.config import get_transfer_workers
+
+    assert get_transfer_workers() == 4
+
+
+def test_get_transfer_workers_custom_from_toml(isolated_config, tmp_path):
+    _write_toml(tmp_path / "config.toml", "[session]\ntransfer_workers = 8\n")
+    from cligoo.config import get_transfer_workers
+
+    assert get_transfer_workers() == 8
+
+
+def test_get_transfer_workers_invalid_returns_default(isolated_config, tmp_path):
+    _write_toml(tmp_path / "config.toml", '[session]\ntransfer_workers = "invalid"\n')
+    from cligoo.config import get_transfer_workers
+
+    assert get_transfer_workers() == 4
