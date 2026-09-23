@@ -210,7 +210,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `[api]` | `debug` | `false` | Verbose HTTP request/response logging |
   | `[session]` | `login_method` | — | `"browser"` or `"password"` |
   | `[session]` | `chrome_profile` | — | Chrome profile directory name |
-  | `[session]` | `transfer_workers` | `20` | Concurrent upload/download threads |
+  | `[session]` | `transfer_workers` | `4` | Concurrent upload/download threads |
   | `[session]` | `auto_relogin` | `true` | Re-login automatically on token expiry |
   | `[output]` | `format` | `"table"` | Default output format: `"table"` or `"json"` |
   | `[output]` | `compact_json` | `false` | Compact (single-line) vs pretty JSON |

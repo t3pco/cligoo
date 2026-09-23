@@ -34,7 +34,7 @@ debug = false
 
 # Concurrent threads used for parallel uploads and downloads (default 20).
 # Override per-command with --workers N.
-transfer_workers = 20
+transfer_workers = 4
 
 # Auto re-login when token expires (true/false)
 auto_relogin = true

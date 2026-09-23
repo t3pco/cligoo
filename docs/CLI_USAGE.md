@@ -721,7 +721,7 @@ debug         = false                         # Verbose HTTP request/response lo
 [session]
 login_method       = "password"               # "password" | "browser"
 chrome_profile     = "Default"               # Chrome profile dir for --browser login
-transfer_workers   = 20                       # Concurrent upload/download threads
+transfer_workers   = 4                       # Concurrent upload/download threads
 auto_relogin       = true                     # Re-authenticate silently when token expires
 default_upload_dir = "/Web"                   # Default remote destination for uploads
 upload_retries     = 5                        # GCS upload retry attempts on transient errors
