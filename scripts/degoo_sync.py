@@ -61,12 +61,16 @@ def log(level: str, msg: str, **kwargs: Any) -> None:
     extras = " ".join(f'{k}="{v}"' if isinstance(v, str) and (" " in v or not v) else f"{k}={v}" for k, v in kwargs.items())
     log_line = f"[{timestamp}] level={level.upper()} msg={msg!r} {extras}".rstrip()
     
-    # Use rich consoles so logs cleanly flow above the active progress bar
-    # markup=False and highlight=False prevent rich from misinterpreting filenames as formatting tags
-    if level.upper() in ("ERROR", "FATAL"):
-        err_console.print(log_line, markup=False, highlight=False)
+    # Use Rich consoles for interactive progress output, but flush plain
+    # container logs immediately so each completed file is visible.
+    if is_tty:
+        if level.upper() in ("ERROR", "FATAL"):
+            err_console.print(log_line, markup=False, highlight=False)
+        else:
+            console.print(log_line, markup=False, highlight=False)
     else:
-        console.print(log_line, markup=False, highlight=False)
+        output = sys.stderr if level.upper() in ("ERROR", "FATAL") else sys.stdout
+        print(log_line, file=output, flush=True)
 
 
 # ── Step 1: Local Filesystem Scan ────────────────────────────────────────────

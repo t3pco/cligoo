@@ -22,6 +22,7 @@ LOCAL_SOURCE_DIR = os.environ.get("SYNC_SOURCE", "/data")
 REMOTE_TARGET_DIR = os.environ.get("SYNC_TARGET", "/Test")
 WORKERS = int(os.environ.get("SYNC_WORKERS", os.environ.get("WORKERS", "4")))
 DELAY = float(os.environ.get("SYNC_DELAY", os.environ.get("DELAY", "1.0")))
+HEARTBEAT_INTERVAL = max(1.0, float(os.environ.get("SYNC_HEARTBEAT_INTERVAL", "60")))
 
 # Run an extra sync run immediately on container startup (for testing/initial sync)
 RUN_ON_STARTUP = os.environ.get("RUN_ON_STARTUP", "true").lower() in ("true", "1", "yes")
@@ -63,6 +64,7 @@ def run_sync(sync_script: Path, source_dir: str, target_dir: str) -> None:
     """Execute the synchronization script."""
     cmd = [
         sys.executable,
+        "-u",
         str(sync_script),
         "--workers", str(WORKERS),
         "--delay", str(DELAY),
@@ -80,13 +82,33 @@ def run_sync(sync_script: Path, source_dir: str, target_dir: str) -> None:
     )
 
     start = time.time()
-    res = subprocess.run(cmd)
+    process = subprocess.Popen(cmd)
+    next_heartbeat = time.monotonic() + HEARTBEAT_INTERVAL
+    while process.poll() is None:
+        wait_seconds = max(0.0, next_heartbeat - time.monotonic())
+        if wait_seconds == 0.0:
+            log(
+                "INFO",
+                "Scheduled sync job still running",
+                duration_sec=round(time.time() - start, 2),
+            )
+            next_heartbeat = time.monotonic() + HEARTBEAT_INTERVAL
+            continue
+        time.sleep(wait_seconds)
+
+    returncode = process.returncode
     elapsed = time.time() - start
 
-    if res.returncode == 0:
+    if returncode == 0:
         log("INFO", "Scheduled sync job completed", status="SUCCESS", duration_sec=round(elapsed, 2))
     else:
-        log("ERROR", "Scheduled sync job failed", status="FAILED", exit_code=res.returncode, duration_sec=round(elapsed, 2))
+        log(
+            "ERROR",
+            "Scheduled sync job failed",
+            status="FAILED",
+            exit_code=returncode,
+            duration_sec=round(elapsed, 2),
+        )
 
 
 def main() -> None:
