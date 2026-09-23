@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional
@@ -94,6 +95,7 @@ class DegooClient:
         timeout: float | None = None,
         graphql_url: str | None = None,
         debug: bool | None = None,
+        min_request_interval: float = 0.0,
     ) -> None:
         from .config import get_api_debug, get_api_timeout, get_graphql_url
 
@@ -102,6 +104,13 @@ class DegooClient:
         self._timeout = timeout if timeout is not None else get_api_timeout()
         self._graphql_url = graphql_url or get_graphql_url() or GRAPHQL_URL
         self._debug = debug if debug is not None else get_api_debug()
+
+        # Rate limiter: enforce a minimum interval between consecutive _gql calls
+        # so that concurrent workers don't flood the Degoo GraphQL endpoint.
+        # min_request_interval=0.0 (default) disables throttling entirely.
+        self._min_request_interval = min_request_interval
+        self._rl_lock = threading.Lock()
+        self._rl_last: float = 0.0
 
         # Copy DEFAULT_HEADERS so httpx normalisation (lower-casing keys etc.)
         # never mutates the shared module-level dict.
@@ -163,8 +172,22 @@ class DegooClient:
         """Send a GraphQL request and return the ``data`` payload.
 
         Retries up to 3 times on transient server errors (HTTP 502/503/504)
-        with exponential backoff (1s, 2s, 4s).
+        and HTTP 429 (rate limited) with exponential backoff (1s, 2s, 4s).
+        HTTP 429 additionally honours the ``Retry-After`` response header.
+
+        When *min_request_interval* is set on the client, a thread-safe gate
+        enforces a minimum time between consecutive calls so that concurrent
+        upload workers don't burst-flood the Degoo GraphQL endpoint.
         """
+        # ── Rate limiter gate ──────────────────────────────────────────────
+        if self._min_request_interval > 0.0:
+            with self._rl_lock:
+                now = time.monotonic()
+                wait = self._min_request_interval - (now - self._rl_last)
+                if wait > 0:
+                    time.sleep(wait)
+                self._rl_last = time.monotonic()
+
         variables = variables or {}
         variables["Token"] = self.token
 
@@ -187,6 +210,20 @@ class DegooClient:
             except httpx.RequestError as exc:
                 last_exc = exc
                 continue  # network error — retry
+
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after is not None:
+                    try:
+                        backoff = float(retry_after)
+                    except ValueError:
+                        backoff = min(2 ** attempt, 60)
+                else:
+                    backoff = min(2 ** attempt, 60)
+                last_exc = DegooAPIError(f"Rate limited (HTTP 429) — waiting {backoff:.1f}s before retry")
+                logger.warning(str(last_exc))
+                time.sleep(backoff)
+                continue
 
             if resp.status_code >= 500:
                 last_exc = DegooAPIError(f"Server error '{resp.status_code} {resp.reason_phrase}' for url '{resp.url}'")
@@ -404,7 +441,13 @@ class DegooClient:
     # Mutations — create / delete / move / rename
     # ═══════════════════════════════════════════════════════════════════════
     def mkdir(self, name: str, parent_id: str = "0") -> str:
-        """Create a folder and return the API response."""
+        """Create a folder and return the new folder's ID (or "OK" on older API responses).
+
+        ``setUploadFile3`` returns the new item's ID as a scalar string when
+        the folder is created successfully.  Callers can use that ID directly
+        instead of making a follow-up ``resolve_path_under`` / ``list_dir``
+        call to discover it.
+        """
         # Creating a folder: setUploadFile3 with Size=0 and empty Checksum.
         # FileInfoUpload3 fields: Name, ParentID, Size (String), Checksum, CreationTime (String), Data
         # 'Category' is NOT a valid field — Degoo infers folder type from Size=0 + empty Checksum.
@@ -420,7 +463,10 @@ class DegooClient:
             {"FileInfos": [file_info]},
             operation="SetUploadFile3",
         )
-        return data.get("setUploadFile3", "OK")
+        result = data.get("setUploadFile3", "OK")
+        # The API returns the new item's numeric ID as a string scalar.
+        # Return it so callers can skip the follow-up resolve_path_under() lookup.
+        return str(result) if result else "OK"
 
     def delete(self, item_ids: list[str], *, permanent: bool = False) -> str:
         """Move items to recycle bin, or permanently delete them.
@@ -698,31 +744,27 @@ class DegooClient:
         )
         upload_result = data.get("setUploadFile3", "OK")
 
-        # Try to get the file ID from the response
-        file_id: Optional[str] = None
-        if upload_result != "OK" and upload_result:
-            file_id = str(upload_result)
+        # setUploadFile3 returns the new item's numeric ID as a scalar string.
+        # Parse it directly — no follow-up list_dir call needed.
+        file_id: Optional[str] = str(upload_result) if upload_result and upload_result != "OK" else None
 
-        # If we don't have the ID yet, find the file by listing the parent
-        if not file_id:
-            try:
-                # Wait a moment for the file to be registered
-                time.sleep(0.5)
-                items = self.list_dir(parent_id, limit=1)
-                # Find the file we just uploaded by name
-                for item in items:
-                    if item.get("Name") == filename:
-                        file_id = item.get("ID")
-                        break
-            except Exception:
-                # If we can't find it, that's OK - verification will fail with more info
-                pass
+        # Optional: verify the upload succeeded (only when explicitly requested).
+        # If we still don't have a file ID at this point and verify=True, do a
+        # minimal list_dir to find it — this is rare and intentional.
+        if verify:
+            if not file_id:
+                try:
+                    time.sleep(0.5)
+                    for item in self.list_dir(parent_id, limit=None):
+                        if item.get("Name") == filename:
+                            file_id = item.get("ID")
+                            break
+                except Exception:
+                    pass
+            if file_id:
+                from .upload_verifier import verify_and_retry
 
-        # Optional: verify the upload succeeded
-        if verify and file_id:
-            from .upload_verifier import verify_and_retry
-
-            verify_and_retry(self, file_id, filename, size, max_retries=max_retries, verbose=False)
+                verify_and_retry(self, file_id, filename, size, max_retries=max_retries, verbose=False)
 
         return file_id or upload_result
 

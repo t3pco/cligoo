@@ -216,12 +216,16 @@ def ensure_remote_folders(
             continue
 
         try:
-            client.mkdir(dir_name, parent_id)
-            item = client.resolve_path_under(parent_id, dir_name)
-            if item is not None:
-                folder_map[rel_dir] = str(item["ID"])
+            new_id = client.mkdir(dir_name, parent_id)
+            # mkdir() returns the new folder's numeric ID directly when the API
+            # provides it.  Use it to skip the follow-up resolve_path_under()
+            # call (which would paginate through all children just to find one name).
+            if new_id and new_id != "OK" and new_id.isdigit():
+                folder_map[rel_dir] = new_id
             else:
-                folder_map[rel_dir] = parent_id
+                # Fallback: API returned "OK" without an ID — ask for it.
+                item = client.resolve_path_under(parent_id, dir_name)
+                folder_map[rel_dir] = str(item["ID"]) if item else parent_id
         except DegooAPIError as e:
             msg = str(e).lower()
             if "already exist" in msg or "invalid input" in msg:
@@ -303,8 +307,22 @@ def main() -> None:
     parser.add_argument("local_path", help="Local directory path (source)")
     parser.add_argument("remote_path", help="Remote Degoo folder path, e.g. /Backup/kopia (destination)")
     parser.add_argument("-n", "--dry-run", action="store_true", help="Preview sync plan without transferring data")
-    parser.add_argument("-w", "--workers", type=int, default=20, help="Number of concurrent transfer workers (default: 20)")
+    parser.add_argument(
+        "-w",
+        "--workers",
+        type=int,
+        default=4,
+        help="Number of concurrent transfer workers (default: 4)",
+    )
     parser.add_argument("--delete", action="store_true", help="Delete remote files that no longer exist locally")
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=0.1,
+        metavar="SECONDS",
+        help="Minimum interval between consecutive Degoo API calls (default: 0.1 s). "
+             "Increase this if you still hit HTTP 429 rate-limit errors.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
@@ -319,11 +337,12 @@ def main() -> None:
         source=str(local_root),
         target=remote_path,
         workers=args.workers,
+        delay_sec=args.delay,
         delete_mode=bool(args.delete),
         dry_run=bool(args.dry_run),
     )
 
-    client = DegooClient()
+    client = DegooClient(min_request_interval=args.delay)
 
     # 1. Scan Local
     t0 = time.time()
