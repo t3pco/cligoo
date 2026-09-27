@@ -12,7 +12,7 @@ setup(
         "keyring>=24.0",
         "humanize>=4.0",
         "pyjwt>=2.0",
-        "curl-cffi",
+        "curl_cffi>=0.7.1",
     ],
     extras_require={
         "dev": ["pytest>=7.0", "pytest-cov", "ruff"],
