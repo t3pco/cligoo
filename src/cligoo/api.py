@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional
 
-from curl_cffi import requests as curl_requests
+from curl_cffi import CurlMime, requests as curl_requests
 from curl_cffi.requests.errors import RequestsError
 
 logger = logging.getLogger(__name__)
@@ -742,17 +742,26 @@ class DegooClient:
                     pf = _ProgressFile(filepath, size, progress_callback)
                 else:
                     pf = open(filepath, "rb")  # noqa: WPS515
-                files = {"file": (filename, pf, content_type)}
+
+                # Build curl_cffi native CurlMime multipart body
+                mp = CurlMime()
+                for field_name, field_val in form_data.items():
+                    mp.addpart(name=field_name, data=str(field_val))
                 
+                mp.addpart(
+                    name="file",
+                    filename=filename,
+                    content_type=content_type,
+                    data=pf,
+                )
+
                 if self._debug:
                     import sys
                     print(f"[DEBUG] --> POST {base_url}", file=sys.stderr)
                     
-                # We use a fresh curl_requests call to avoid sending Degoo auth headers to Google Storage
                 upload_resp = curl_requests.post(
-                    base_url, 
-                    data=form_data, 
-                    files=files, 
+                    base_url,
+                    multipart=mp,
                     timeout=600,
                     impersonate="chrome124",
                 )
