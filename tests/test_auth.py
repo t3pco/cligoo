@@ -148,11 +148,11 @@ def test_check_login_backoff_corrupted_file_is_deleted_and_returns_none(tmp_path
 
 def test_login_raises_rate_limit_error_on_429(tmp_path):
     """login() must immediately raise a friendly rate-limit AuthError on 429."""
-    import httpx
+    from curl_cffi import requests as curl_requests
 
     from cligoo.auth import login
 
-    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp = MagicMock(spec=curl_requests.Response)
     mock_resp.status_code = 429
     mock_resp.text = ""
 
@@ -160,7 +160,7 @@ def test_login_raises_rate_limit_error_on_429(tmp_path):
     with (
         patch("cligoo.auth._LOGIN_BACKOFF_FILE", backoff_file),
         patch("cligoo.auth._check_login_backoff", return_value=None),
-        patch("httpx.post", return_value=mock_resp),
+        patch("cligoo.auth.curl_requests.post", return_value=mock_resp),
     ):
         with pytest.raises(AuthError, match="rate-limited"):
             login("user@example.com", "password", save=False)
