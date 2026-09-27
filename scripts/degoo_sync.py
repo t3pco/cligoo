@@ -21,6 +21,7 @@ import argparse
 import concurrent.futures
 import datetime
 import os
+import random  # <-- Added for jitter mechanism
 import sys
 import time
 from pathlib import Path
@@ -166,6 +167,10 @@ def _execute_remote_scan(
 ) -> None:
     while queue:
         parent_id, parent_rel = queue.pop(0)
+        
+        # ── JITTER: Prevent burst-listing folders to bypass Cloudflare ──
+        time.sleep(random.uniform(0.1, 0.4))
+
         try:
             items = client.list_dir(parent_id, limit=None)
         except DegooAPIError as e:
@@ -217,6 +222,9 @@ def ensure_remote_folders(
             folder_map[rel_dir] = f"dry-run-{rel_dir}"
             continue
 
+        # ── JITTER: Prevent burst-creating folders ──
+        time.sleep(random.uniform(0.1, 0.3))
+
         try:
             new_id = client.mkdir(dir_name, parent_id)
             # mkdir() returns the new folder's numeric ID directly when the API
@@ -253,6 +261,11 @@ def _upload_single_file(
     overall_task_id: Any,
 ) -> bool:
     """Worker task to upload one file."""
+    
+    # ── JITTER: Stagger worker threads to avoid a thunderous herd on start ──
+    # Without this, all workers fire an HTTP request at the exact same millisecond.
+    time.sleep(random.uniform(0.1, 1.5))
+    
     last_uploaded = [0]
     task_id = progress.add_task(f"↑ {target_name}", total=file_size) if progress else None
 
@@ -456,7 +469,9 @@ def main() -> None:
                     log("INFO", "File deleted", file=p)
             except DegooAPIError as e:
                 log("WARN", "Warning during batch deletion", error=str(e))
-            time.sleep(0.2)
+                
+            # ── JITTER: Replaced fixed 0.2s with random delay ──
+            time.sleep(random.uniform(0.3, 0.9))
 
     # 6. Delete old items that need to be updated
     if to_update:
@@ -467,7 +482,9 @@ def main() -> None:
                 client.delete(chunk, permanent=False)
             except DegooAPIError:
                 pass
-            time.sleep(0.2)
+                
+            # ── JITTER: Replaced fixed 0.2s with random delay ──
+            time.sleep(random.uniform(0.3, 0.9))
 
     # 7. Execute Parallel Transfers
     all_upload_tasks: List[Tuple[Path, str, str, int]] = []

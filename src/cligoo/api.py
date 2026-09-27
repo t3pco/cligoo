@@ -1,6 +1,6 @@
 """Degoo GraphQL API client.
 
-Thin wrapper around httpx that sends authenticated GraphQL requests
+Thin wrapper around curl_cffi that sends authenticated GraphQL requests
 and returns parsed results.
 """
 
@@ -14,7 +14,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional
 
-import httpx
+from curl_cffi import requests as curl_requests
+from curl_cffi.requests.errors import RequestsError
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +63,8 @@ class DegooAlreadyExistsError(DegooAPIError):
 class _ProgressFile:
     """Read-only file wrapper that calls *callback(bytes_read, total)* on each chunk.
 
-    Passed to ``httpx.post`` as the file body so upload progress is reported
-    incrementally as httpx reads from it for the multipart form POST.
+    Passed to ``curl_requests.post`` as the file body so upload progress is reported
+    incrementally as it reads from it for the multipart form POST.
     """
 
     def __init__(self, path: Path, total: int, callback: Callable[[int, int], None]) -> None:
@@ -81,7 +82,7 @@ class _ProgressFile:
     def close(self) -> None:
         self._f.close()
 
-    # httpx inspects __len__ to set Content-Length — expose the total size
+    # requests / curl_cffi inspects __len__ to set Content-Length — expose the total size
     def __len__(self) -> int:
         return self._total
 
@@ -113,24 +114,25 @@ class DegooClient:
         self._rl_last: float = 0.0
         self._rl_pause_until: float = 0.0
 
-        # Copy DEFAULT_HEADERS so httpx normalisation (lower-casing keys etc.)
-        # never mutates the shared module-level dict.
+        # Create session with Chrome TLS impersonation
         if self._debug:
             import sys
 
-            def _log_req(req: httpx.Request) -> None:
-                print(f"[DEBUG] --> {req.method} {req.url}", file=sys.stderr)
-
-            def _log_resp(resp: httpx.Response) -> None:
+            def _log_resp(resp: Any, *args: Any, **kwargs: Any) -> None:
                 print(f"[DEBUG] <-- {resp.status_code} {resp.url}", file=sys.stderr)
 
-            self._http = httpx.Client(
+            self._http = curl_requests.Session(
                 headers=dict(DEFAULT_HEADERS),
                 timeout=self._timeout,
-                event_hooks={"request": [_log_req], "response": [_log_resp]},
+                impersonate="chrome124",
+                hooks={"response": [_log_resp]},
             )
         else:
-            self._http = httpx.Client(headers=dict(DEFAULT_HEADERS), timeout=self._timeout)
+            self._http = curl_requests.Session(
+                headers=dict(DEFAULT_HEADERS),
+                timeout=self._timeout,
+                impersonate="chrome124",
+            )
 
     def close(self) -> None:
         """Close the underlying HTTP connection pool."""
@@ -214,8 +216,12 @@ class DegooClient:
                     time.sleep(min(wait_cooldown, 5.0))
 
             try:
+                if self._debug:
+                    import sys
+                    print(f"[DEBUG] --> POST {self._graphql_url}", file=sys.stderr)
+                    
                 resp = self._http.post(self._graphql_url, json=body)
-            except httpx.RequestError as exc:
+            except RequestsError as exc:
                 last_exc = exc
                 transient_attempts += 1
                 if transient_attempts > max_transient_retries:
@@ -253,7 +259,7 @@ class DegooClient:
 
             if resp.status_code >= 500:
                 transient_attempts += 1
-                last_exc = DegooAPIError(f"Server error '{resp.status_code} {resp.reason_phrase}' for url '{resp.url}'")
+                last_exc = DegooAPIError(f"Server error '{resp.status_code} {resp.reason}' for url '{resp.url}'")
                 if transient_attempts > max_transient_retries:
                     raise last_exc
                 backoff = min(2 ** (transient_attempts - 1), 8)
@@ -737,8 +743,20 @@ class DegooClient:
                 else:
                     pf = open(filepath, "rb")  # noqa: WPS515
                 files = {"file": (filename, pf, content_type)}
-                upload_resp = httpx.post(base_url, data=form_data, files=files, timeout=600)
-            except httpx.RequestError as exc:
+                
+                if self._debug:
+                    import sys
+                    print(f"[DEBUG] --> POST {base_url}", file=sys.stderr)
+                    
+                # We use a fresh curl_requests call to avoid sending Degoo auth headers to Google Storage
+                upload_resp = curl_requests.post(
+                    base_url, 
+                    data=form_data, 
+                    files=files, 
+                    timeout=600,
+                    impersonate="chrome124",
+                )
+            except RequestsError as exc:
                 last_exc = exc
                 continue  # network drop — retry
             finally:
@@ -861,16 +879,21 @@ class DegooClient:
         if not overwrite:
             dest = self._unique_local_path(dest)
 
-        with httpx.stream("GET", url, follow_redirects=True, timeout=600) as resp:
+        if self._debug:
+            import sys
+            print(f"[DEBUG] --> GET {url}", file=sys.stderr)
+
+        with curl_requests.get(url, allow_redirects=True, timeout=600, stream=True, impersonate="chrome124") as resp:
             resp.raise_for_status()
             total = int(resp.headers.get("content-length", 0))
             downloaded = 0
             with open(dest, "wb") as f:
-                for chunk in resp.iter_bytes(chunk_size=65536):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if progress_callback:
-                        progress_callback(downloaded, total)
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:  # filter out keep-alive new chunks
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if progress_callback:
+                            progress_callback(downloaded, total)
 
         return dest
 

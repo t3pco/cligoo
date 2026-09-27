@@ -33,6 +33,12 @@ del _resolve_api_key
 DEFAULT_HEADERS = {
     "x-api-key": API_KEY,
     "Content-Type": "application/json",
+    "Referer": "https://app.degoo.com/",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Dnt": "1"
 }
 
 # ── Item categories ───────────────────────────────────────────────────────────
