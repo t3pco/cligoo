@@ -83,19 +83,21 @@ pip install git+https://github.com/marcomc/cligoo.git
 
 You can run `cligoo` in a container without installing Python locally.
 
-#### Running Always-On Container for Backups
+#### Running the Scheduled Backup Container
 
-To run the container continuously in the background (e.g. for scheduled backups or running scripts):
+The Docker image includes the sync scripts and starts the scheduler by default.
+The scheduler runs once when the container starts, then at its configured
+daily schedule. Build the image and start the container with:
 
 ```bash
-# Start container in background with docker compose
-docker compose up -d
+# Build the local image and start the scheduler in the background
+docker compose up --build -d
 
 # Execute a command in the running container
 docker compose exec cligoo cligoo whoami
 
-# Run a backup script inside the container
-docker compose exec cligoo /scripts/backup-example.sh
+# Run the sync script manually
+docker compose exec cligoo python /scripts/degoo_sync.py --help
 ```
 
 #### One-off CLI Execution

@@ -35,6 +35,7 @@ WORKDIR /app
 # Copy application sources
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
+COPY --chown=cligoo:cligoo scripts/ /scripts/
 
 # Install cligoo
 RUN pip install .
@@ -51,4 +52,4 @@ WORKDIR /data
 VOLUME ["/home/cligoo/.config/cligoo"]
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["daemon"]
+CMD ["python", "-u", "/scripts/schedule_sync.py"]
