@@ -27,6 +27,7 @@ class FakeDegooClient:
         self.fail_rename_on_call: int | None = None
         self.rename_calls = 0
         self.mkdir_returns_bool = False
+        self.mkdir_creates_ghost = False
         self.delay_created_visibility = False
         self.hidden_after_create: dict[tuple[str, str], int] = {}
 
@@ -46,14 +47,36 @@ class FakeDegooClient:
         folders = [item for item in candidates if self.is_folder(item)]
         return folders[0] if folders else (candidates[0] if candidates else None)
 
+    def get_item(self, item_id: str) -> dict:
+        return self.items[item_id]
+
     def mkdir(self, name: str, parent_id: str) -> str | bool:
         item_id = str(self.next_id)
         self.next_id += 1
-        item = {"ID": item_id, "Name": name, "Category": 2, "ParentID": parent_id, "Size": 0}
+        category = 6 if self.mkdir_creates_ghost else 2
+        item = {"ID": item_id, "Name": name, "Category": category, "ParentID": parent_id, "Size": 0, "URL": ""}
         self.items[item_id] = item
         self.children.setdefault(parent_id, []).append(item)
         self.children[item_id] = []
         self.events.append(("mkdir", name))
+        parent = self.items.get(parent_id)
+        if self.mkdir_creates_ghost and parent is not None and parent.get("Category") == 6:
+            promoted_id = str(self.next_id)
+            self.next_id += 1
+            promoted = {
+                "ID": promoted_id,
+                "Name": parent["Name"],
+                "Category": 2,
+                "ParentID": parent["ParentID"],
+                "Size": 0,
+                "URL": "",
+            }
+            self.items[promoted_id] = promoted
+            self.children.setdefault(parent["ParentID"], []).append(promoted)
+            self.children[promoted_id] = self.children[parent_id]
+            for child in self.children[promoted_id]:
+                child["ParentID"] = promoted_id
+            self.children[parent_id] = []
         if self.delay_created_visibility:
             self.hidden_after_create[(parent_id, name)] = 1
         return True if self.mkdir_returns_bool else item_id
@@ -218,6 +241,38 @@ def test_run_sync_reuses_empty_degoo_folder_placeholder(tmp_path: Path):
     assert ("mkdir", "_lo") not in client.events
     uploaded = next(item for item in client.items.values() if item["Name"] == "file.txt")
     assert uploaded["ParentID"] == "2"
+
+
+def test_run_sync_promotes_placeholder_before_creating_nested_folder(tmp_path: Path):
+    source = tmp_path / "source"
+    nested = source / "_lo" / "sub"
+    nested.mkdir(parents=True)
+    (nested / "file.txt").write_text("content")
+    client = FakeDegooClient()
+    client.mkdir_returns_bool = True
+    client.mkdir_creates_ghost = True
+    target = {"ID": "1", "Name": "Backup", "Category": 2, "ParentID": "0", "Size": 0, "URL": ""}
+    client.items["1"] = target
+    client.children["0"].append(target)
+    client.children["1"] = []
+
+    result = run_sync(
+        client,
+        source,
+        "/Backup",
+        workers=1,
+        state_path=tmp_path / "state.sqlite3",
+    )
+
+    assert result.completed_files == 1
+    assert ("mkdir", "_lo") in client.events
+    assert ("mkdir", "sub") in client.events
+    promoted = client.resolve_path_under("1", "_lo")
+    assert promoted is not None and promoted["Category"] == 2
+    child = client.resolve_path_under(str(promoted["ID"]), "sub")
+    assert child is not None
+    uploaded = next(item for item in client.items.values() if item["Name"] == "file.txt")
+    assert uploaded["ParentID"] == child["ID"]
 
 
 def test_run_sync_refuses_remote_file_conflicting_with_local_directory(tmp_path: Path):
