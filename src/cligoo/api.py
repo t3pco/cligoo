@@ -10,7 +10,7 @@ import base64
 import hashlib
 import time
 from pathlib import Path
-from typing import Any, Callable, Generator, Optional
+from typing import Any, Generator, Optional
 
 from curl_cffi import CurlMime
 from curl_cffi import requests as curl_requests
@@ -55,33 +55,6 @@ class DegooAPIError(Exception):
 
 class DegooAlreadyExistsError(DegooAPIError):
     """Raised when Degoo reports the file already exists (deduplication)."""
-
-
-class _ProgressFile:
-    """Read-only file wrapper that calls *callback(bytes_read, total)* on each chunk.
-
-    Passed to ``curl_requests.post`` as the file body so upload progress is
-    reported incrementally as it reads from it for the multipart form POST.
-    """
-
-    def __init__(self, path: Path, total: int, callback: Callable[[int, int], None]) -> None:
-        self._f = open(path, "rb")  # noqa: WPS515
-        self._total = total
-        self._read = 0
-        self._cb = callback
-
-    def read(self, n: int = -1) -> bytes:
-        chunk = self._f.read(n)
-        self._read += len(chunk)
-        self._cb(self._read, self._total)
-        return chunk
-
-    def close(self) -> None:
-        self._f.close()
-
-    # The request client inspects __len__ to set Content-Length.
-    def __len__(self) -> int:
-        return self._total
 
 
 class DegooClient:
@@ -549,7 +522,7 @@ class DegooClient:
             filepath: Path to the file to upload
             parent_id: ID of the destination folder (default: root)
             name: Optional custom name for the uploaded file
-            progress_callback: Optional callback for upload progress
+            progress_callback: Optional callback notified when the file transfer completes
             verify: Whether to verify the upload succeeded (detects GCS linkage issues)
             max_retries: Number of verification retry attempts (if verify=True)
             upload_retries: Retry attempts for transient GCS upload failures (network
@@ -624,12 +597,7 @@ class DegooClient:
                 backoff = min(2 ** (attempt - 1), 30)
                 time.sleep(backoff)
 
-            pf: Any = None
             try:
-                if progress_callback:
-                    pf = _ProgressFile(filepath, size, progress_callback)
-                else:
-                    pf = open(filepath, "rb")  # noqa: WPS515
                 multipart = CurlMime()
                 for field_name, field_value in form_data.items():
                     multipart.addpart(name=field_name, data=str(field_value))
@@ -637,7 +605,7 @@ class DegooClient:
                     name="file",
                     filename=filename,
                     content_type=content_type,
-                    data=pf,
+                    local_path=filepath,
                 )
                 upload_resp = curl_requests.post(
                     base_url,
@@ -648,11 +616,10 @@ class DegooClient:
             except RequestsError as exc:
                 last_exc = exc
                 continue  # network drop — retry
-            finally:
-                if pf is not None:
-                    pf.close()
 
             if upload_resp.status_code in (200, 201, 204):
+                if progress_callback:
+                    progress_callback(size, size)
                 break  # success
 
             if upload_resp.status_code >= 500:
