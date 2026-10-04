@@ -51,6 +51,31 @@ class SyncError(RuntimeError):
     """Raised when a sync cannot safely complete."""
 
 
+def _resolve_created_item(client: DegooClient, parent_id: str, name: str) -> dict | None:
+    """Retry a lookup after mkdir because Degoo listings are eventually consistent."""
+    for attempt in range(6):
+        item = client.resolve_path_under(parent_id, name)
+        if item is not None:
+            return item
+        if attempt < 5:
+            delay = 5
+            _log(
+                "INFO",
+                "New remote folder is not visible yet; retrying lookup",
+                folder=name,
+                parent_id=parent_id,
+                attempt=attempt + 1,
+                retry_in_sec=delay,
+            )
+            time.sleep(delay)
+    return None
+
+
+def _is_created_folder(client: DegooClient, item: dict) -> bool:
+    """Accept Degoo's temporary Category=6 folder ghost returned after mkdir."""
+    return client.is_folder(item) or str(item.get("Category")) == "6"
+
+
 class SyncState:
     """Persist source fingerprints between runs to detect same-size edits."""
 
@@ -155,7 +180,7 @@ def ensure_remote_root(client: DegooClient, remote_path: str, *, create: bool) -
             except DegooAPIError as exc:
                 # An existing folder can be reported as an API error if another
                 # process created it after our lookup; resolve it below.
-                item = client.resolve_path_under(parent_id, part)
+                item = _resolve_created_item(client, parent_id, part)
                 if item is None:
                     raise SyncError(f"Could not create remote folder {part!r}: {exc}") from exc
             else:
@@ -163,8 +188,8 @@ def ensure_remote_root(client: DegooClient, remote_path: str, *, create: bool) -
                     parent_id = created_id
                     continue
             if item is None:
-                item = client.resolve_path_under(parent_id, part)
-        if item is None or not client.is_folder(item):
+                item = _resolve_created_item(client, parent_id, part)
+        if item is None or not _is_created_folder(client, item):
             raise SyncError(f"Remote target component is not a folder: {part}")
         parent_id = str(item["ID"])
 
@@ -303,15 +328,15 @@ def run_sync(
             try:
                 created_id = client.mkdir(folder_name, parent_id)
             except DegooAPIError as exc:
-                existing = client.resolve_path_under(parent_id, folder_name)
-                if existing is None or not client.is_folder(existing):
+                existing = _resolve_created_item(client, parent_id, folder_name)
+                if existing is None or not _is_created_folder(client, existing):
                     raise SyncError(f"Could not create remote folder {relative}: {exc}") from exc
             else:
                 if isinstance(created_id, str) and created_id.isdigit():
                     folder_map[relative] = created_id
                     continue
-            folder = client.resolve_path_under(parent_id, folder_name)
-            if folder is None or not client.is_folder(folder):
+            folder = _resolve_created_item(client, parent_id, folder_name)
+            if folder is None or not _is_created_folder(client, folder):
                 raise SyncError(f"Could not resolve newly created remote folder: {relative}")
             folder_map[relative] = str(folder["ID"])
 

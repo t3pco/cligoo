@@ -5,6 +5,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -26,6 +27,8 @@ class FakeDegooClient:
         self.fail_rename_on_call: int | None = None
         self.rename_calls = 0
         self.mkdir_returns_bool = False
+        self.delay_created_visibility = False
+        self.hidden_after_create: dict[tuple[str, str], int] = {}
 
     @staticmethod
     def is_folder(item: dict) -> bool:
@@ -35,6 +38,10 @@ class FakeDegooClient:
         yield from self.children.get(parent_id, [])
 
     def resolve_path_under(self, parent_id: str, name: str) -> dict | None:
+        hidden_key = (parent_id, name)
+        if self.hidden_after_create.get(hidden_key, 0) > 0:
+            self.hidden_after_create[hidden_key] -= 1
+            return None
         candidates = [item for item in self.children.get(parent_id, []) if item["Name"] == name]
         folders = [item for item in candidates if self.is_folder(item)]
         return folders[0] if folders else (candidates[0] if candidates else None)
@@ -47,6 +54,8 @@ class FakeDegooClient:
         self.children.setdefault(parent_id, []).append(item)
         self.children[item_id] = []
         self.events.append(("mkdir", name))
+        if self.delay_created_visibility:
+            self.hidden_after_create[(parent_id, name)] = 1
         return True if self.mkdir_returns_bool else item_id
 
     def delete(self, item_ids: list[str], *, permanent: bool = False) -> str:
@@ -157,6 +166,30 @@ def test_run_sync_resolves_folders_when_mkdir_returns_boolean(tmp_path: Path):
     assert client.events.count(("mkdir", "one")) == 1
     assert client.events.count(("mkdir", "two")) == 1
     assert client.events.count(("upload", "file.txt")) == 1
+
+
+def test_run_sync_retries_folder_lookup_after_eventual_visibility(tmp_path: Path):
+    source = tmp_path / "source"
+    nested = source / "_lo"
+    nested.mkdir(parents=True)
+    (nested / "file.txt").write_text("content")
+    client = FakeDegooClient()
+    client.mkdir_returns_bool = True
+    client.delay_created_visibility = True
+
+    with patch("cligoo.sync.time.sleep") as sleep:
+        result = run_sync(
+            client,
+            source,
+            "/Backup",
+            workers=1,
+            state_path=tmp_path / "state.sqlite3",
+        )
+
+    assert result.completed_files == 1
+    assert ("mkdir", "_lo") in client.events
+    assert ("upload", "file.txt") in client.events
+    assert [call.args for call in sleep.call_args_list].count((5,)) == 2
 
 
 def test_run_sync_dry_run_does_not_create_remote_items(tmp_path: Path):
