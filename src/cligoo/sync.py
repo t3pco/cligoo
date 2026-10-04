@@ -92,6 +92,67 @@ def _resolve_promoted_folder(client: DegooClient, parent_id: str, name: str) -> 
     return None
 
 
+def _promote_folder_placeholder(
+    client: DegooClient,
+    placeholder_id: str,
+    parent_id: str,
+    name: str,
+) -> dict:
+    """Create a temporary child to make Degoo promote a folder placeholder."""
+    existing = client.resolve_path_under(parent_id, name)
+    if existing is not None and client.is_folder(existing):
+        return existing
+
+    marker_name = f".cligoo-sync-folder-marker-{uuid.uuid4().hex}"
+    marker_id: str | None = None
+    try:
+        result = client.mkdir(marker_name, placeholder_id)
+        if isinstance(result, str) and result.isdigit():
+            marker_id = result
+        _log(
+            "INFO",
+            "Created temporary child to promote Degoo folder placeholder",
+            folder=name,
+            parent_id=parent_id,
+            placeholder_id=placeholder_id,
+            marker=marker_name,
+            response_type=type(result).__name__,
+        )
+    except DegooAPIError as exc:
+        raise SyncError(f"Could not trigger Degoo folder promotion for {name!r}: {exc}") from exc
+
+    promoted = _resolve_promoted_folder(client, parent_id, name)
+    if promoted is None:
+        raise SyncError(
+            f"Degoo did not promote folder {name!r} after creating a child marker; "
+            "the directory is still a document placeholder"
+        )
+
+    if marker_id is None:
+        marker = client.resolve_path_under(str(promoted["ID"]), marker_name)
+        if marker is not None:
+            marker_id = str(marker["ID"])
+    if marker_id is not None:
+        try:
+            client.delete([marker_id], permanent=False)
+        except DegooAPIError as exc:
+            _log(
+                "WARN",
+                "Could not remove temporary folder-promotion marker",
+                folder=name,
+                marker_id=marker_id,
+                error=str(exc),
+            )
+    else:
+        _log(
+            "WARN",
+            "Could not find temporary folder-promotion marker for cleanup",
+            folder=name,
+            marker=marker_name,
+        )
+    return promoted
+
+
 def _is_created_folder(client: DegooClient, item: dict) -> bool:
     """Accept Degoo's temporary Category=6 folder ghost returned after mkdir."""
     return client.is_folder(item) or _is_folder_ghost(item)
@@ -460,8 +521,6 @@ def run_sync(
 
         def pending_uploads() -> Iterator[tuple[str, LocalFile, RemoteFile | None, str]]:
             for relative, local in local_files.items():
-                if relative in preuploaded_paths:
-                    continue
                 remote = remote_files.get(relative)
                 cached = saved_fingerprints.get(relative)
                 if remote is not None and remote.size == local.size:
@@ -568,44 +627,21 @@ def run_sync(
         completed = 0
         failures: list[str] = []
         state_updates: list[tuple[str, int, int]] = []
-        preuploaded_paths: set[str] = set()
-
-        promotion_uploads: dict[str, tuple[str, LocalFile, RemoteFile | None]] = {}
-        for relative, local in local_files.items():
-            parent_relative, _, _ = relative.rpartition("/")
-            if parent_relative not in ghost_folders or parent_relative in promotion_uploads:
+        for ghost_path in sorted(ghost_folders, key=lambda item: (item.count("/"), item)):
+            if ghost_path not in directories_with_files:
                 continue
-            remote = remote_files.get(relative)
-            cached = saved_fingerprints.get(relative)
-            if remote is not None and remote.size == local.size:
-                if cached is None or _fingerprint_matches(local, cached):
-                    continue
-            promotion_uploads[parent_relative] = (relative, local, remote)
-
-        for ghost_path, (relative, local, remote) in promotion_uploads.items():
-            ghost_id = folder_map[ghost_path]
-            _log(
-                "INFO",
-                "Uploading first file into Degoo placeholder to create a real folder",
-                folder=ghost_path,
-                path=str(local.path),
+            parent_relative, _, folder_name = ghost_path.rpartition("/")
+            parent_id = folder_map.get(parent_relative)
+            if parent_id is None:
+                raise SyncError(f"Remote parent folder is missing for placeholder {ghost_path}")
+            promoted_folder = _promote_folder_placeholder(
+                client,
+                folder_map[ghost_path],
+                parent_id,
+                folder_name,
             )
-            upload_one(local, remote, ghost_id)
-            grandparent_relative, _, folder_name = ghost_path.rpartition("/")
-            grandparent_id = folder_map.get(grandparent_relative)
-            if grandparent_id is None:
-                raise SyncError(f"Remote grandparent folder is missing for {ghost_path}")
-            promoted_folder = _resolve_promoted_folder(client, grandparent_id, folder_name)
-            if promoted_folder is None:
-                raise SyncError(
-                    f"Degoo kept {ghost_path!r} as a document placeholder after uploading "
-                    f"{relative!r}; refusing to report a successful folder backup"
-                )
             folder_map[ghost_path] = str(promoted_folder["ID"])
             ghost_folders.remove(ghost_path)
-            preuploaded_paths.add(relative)
-            completed += 1
-            state_updates.append((relative, local.size, local.mtime_ns))
 
         iterator = iter(pending_uploads())
         max_pending = max(workers, workers * 2)
