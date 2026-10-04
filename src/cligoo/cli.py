@@ -1429,7 +1429,18 @@ def _collect_upload_tasks(
 
     # Fall back to listing the parent (works when parent is a real Cat=2 folder)
     if new_folder is None:
-        new_folder = client.resolve_path_under(actual_parent_id, local_dir.name)
+        if _cat2_resolver is not None:
+            actual_parent_id = _cat2_resolver()
+        lookup_attempts = 1 if folder_existed else 6
+        for attempt in range(lookup_attempts):
+            new_folder = client.resolve_path_under(actual_parent_id, local_dir.name)
+            if new_folder is not None:
+                break
+            if attempt + 1 < lookup_attempts:
+                (_log_console or console).print(
+                    f"  [dim]waiting for Degoo to list {local_dir.name} ({attempt + 1}/{lookup_attempts - 1})[/dim]"
+                )
+                time.sleep(5)
 
     if new_folder is None:
         if folder_existed:

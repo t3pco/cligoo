@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from cligoo.api import DegooAPIError
 from cligoo.constants import FOLDER_CATEGORIES
 from cligoo.scheduler import _validate_cron_schedule, next_run
 from cligoo.sync import SyncError, run_sync, scan_local_tree
@@ -51,6 +52,8 @@ class FakeDegooClient:
         return self.items[item_id]
 
     def mkdir(self, name: str, parent_id: str) -> str | bool:
+        if any(item["Name"] == name for item in self.children.get(parent_id, [])):
+            raise DegooAPIError("Invalid input")
         item_id = str(self.next_id)
         self.next_id += 1
         category = 6 if self.mkdir_creates_ghost else 2
@@ -255,6 +258,7 @@ def test_run_sync_promotes_placeholder_before_creating_nested_folder(tmp_path: P
     client.items["1"] = target
     client.children["0"].append(target)
     client.children["1"] = []
+    client.next_id = 2
 
     result = run_sync(
         client,

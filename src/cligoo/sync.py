@@ -71,88 +71,6 @@ def _resolve_created_item(client: DegooClient, parent_id: str, name: str) -> dic
     return None
 
 
-def _resolve_promoted_folder(client: DegooClient, parent_id: str, name: str) -> dict | None:
-    """Wait for Degoo to replace a Category=6 placeholder with a real folder."""
-    for attempt in range(60):
-        item = client.resolve_path_under(parent_id, name)
-        if item is not None and client.is_folder(item):
-            return item
-        if attempt < 59:
-            delay = 3
-            if attempt % 10 == 0:
-                _log(
-                    "INFO",
-                    "Waiting for Degoo to promote folder placeholder",
-                    folder=name,
-                    parent_id=parent_id,
-                    attempt=attempt + 1,
-                    retry_in_sec=delay,
-                )
-            time.sleep(delay)
-    return None
-
-
-def _promote_folder_placeholder(
-    client: DegooClient,
-    placeholder_id: str,
-    parent_id: str,
-    name: str,
-) -> dict:
-    """Create a temporary child to make Degoo promote a folder placeholder."""
-    existing = client.resolve_path_under(parent_id, name)
-    if existing is not None and client.is_folder(existing):
-        return existing
-
-    marker_name = f".cligoo-sync-folder-marker-{uuid.uuid4().hex}"
-    marker_id: str | None = None
-    try:
-        result = client.mkdir(marker_name, placeholder_id)
-        if isinstance(result, str) and result.isdigit():
-            marker_id = result
-        _log(
-            "INFO",
-            "Created temporary child to promote Degoo folder placeholder",
-            folder=name,
-            parent_id=parent_id,
-            placeholder_id=placeholder_id,
-            marker=marker_name,
-            response_type=type(result).__name__,
-        )
-    except DegooAPIError as exc:
-        raise SyncError(f"Could not trigger Degoo folder promotion for {name!r}: {exc}") from exc
-
-    promoted = _resolve_promoted_folder(client, parent_id, name)
-    if promoted is None:
-        raise SyncError(
-            f"Degoo did not promote folder {name!r} after creating a child marker; "
-            "the directory is still a document placeholder"
-        )
-
-    if marker_id is None:
-        marker = client.resolve_path_under(str(promoted["ID"]), marker_name)
-        if marker is not None:
-            marker_id = str(marker["ID"])
-    if marker_id is not None:
-        try:
-            client.delete([marker_id], permanent=False)
-        except DegooAPIError as exc:
-            _log(
-                "WARN",
-                "Could not remove temporary folder-promotion marker",
-                folder=name,
-                marker_id=marker_id,
-                error=str(exc),
-            )
-    else:
-        _log(
-            "WARN",
-            "Could not find temporary folder-promotion marker for cleanup",
-            folder=name,
-            marker=marker_name,
-        )
-    return promoted
-
-
 def _is_created_folder(client: DegooClient, item: dict) -> bool:
     """Accept Degoo's temporary Category=6 folder ghost returned after mkdir."""
     return client.is_folder(item) or _is_folder_ghost(item)
@@ -287,9 +205,7 @@ def ensure_remote_root(client: DegooClient, remote_path: str, *, create: bool) -
     return parent_id
 
 
-def scan_remote_tree(
-    client: DegooClient, root_folder_id: str
-) -> tuple[dict[str, RemoteFile], dict[str, str], set[str]]:
+def scan_remote_tree(client: DegooClient, root_folder_id: str) -> tuple[dict[str, RemoteFile], dict[str, str]]:
     """Walk the target folder recursively, streaming each folder's paginated items."""
     files: dict[str, RemoteFile] = {}
     folders = {"": root_folder_id}
@@ -336,7 +252,7 @@ def scan_remote_tree(
         except DegooAPIError as exc:
             raise SyncError(f"Could not list remote folder {parent_relative or '/'}: {exc}") from exc
 
-    return files, folders, ghost_folders
+    return files, folders
 
 
 def _fingerprint_matches(local: LocalFile, cached: tuple[int, int] | None) -> bool:
@@ -373,7 +289,7 @@ def run_sync(
         remote_files: dict[str, RemoteFile] = {}
         remote_folders = {"": None}
     else:
-        remote_files, remote_folders, ghost_folders = scan_remote_tree(client, root_id)
+        remote_files, remote_folders = scan_remote_tree(client, root_id)
     _log("INFO", "Remote scan complete", files=len(remote_files), folders=len(remote_folders))
 
     state_scope = json.dumps([str(local_root), remote_path], separators=(",", ":"))
@@ -433,14 +349,11 @@ def run_sync(
             root_id = ensure_remote_root(client, remote_path, create=True)
             if root_id is None:
                 raise SyncError(f"Could not create remote target folder: {remote_path}")
-            remote_files, remote_folders, ghost_folders = scan_remote_tree(client, root_id)
+            remote_files, remote_folders = scan_remote_tree(client, root_id)
 
-        folder_map = dict(remote_folders)
         for relative in sorted(local_directories, key=lambda item: (item.count("/"), item)):
             if relative not in directories_with_files:
                 _log("INFO", "Skipping empty local directory", path=relative)
-                continue
-            if relative in folder_map:
                 continue
             conflicting_file = remote_files.get(relative)
             if conflicting_file is not None:
@@ -448,76 +361,23 @@ def run_sync(
                     f"Remote file conflicts with local directory {relative!r} "
                     f"(item ID {conflicting_file.item_id}); refusing to replace it"
                 )
-            parent_relative, _, folder_name = relative.rpartition("/")
-            parent_id = folder_map.get(parent_relative)
-            if parent_id is None:
-                raise SyncError(f"Remote parent folder is missing for {relative}")
-            parent_was_ghost = parent_relative in ghost_folders
-            mkdir_error: DegooAPIError | None = None
-            created_id: object = None
-            try:
-                created_id = client.mkdir(folder_name, parent_id)
-            except DegooAPIError as exc:
-                mkdir_error = exc
-                _log(
-                    "WARN",
-                    "Folder creation returned an API error; checking for an existing item",
-                    path=relative,
-                    parent_id=parent_id,
-                    error=str(exc),
-                )
-            else:
-                _log(
-                    "INFO",
-                    "Remote folder creation requested",
-                    path=relative,
-                    parent_id=parent_id,
-                    response_type=type(created_id).__name__,
-                    response=created_id,
-                )
+        from .cli import _collect_upload_tasks
 
-            if parent_was_ghost:
-                grandparent_relative, _, parent_name = parent_relative.rpartition("/")
-                grandparent_id = folder_map.get(grandparent_relative)
-                if grandparent_id is None:
-                    raise SyncError(f"Remote grandparent folder is missing for {parent_relative}")
-                promoted_parent = _resolve_promoted_folder(client, grandparent_id, parent_name)
-                if promoted_parent is None:
-                    raise SyncError(
-                        f"Degoo did not promote parent folder {parent_relative!r} after creating "
-                        f"{relative!r}; the item may remain a document placeholder"
-                    ) from mkdir_error
-                parent_id = str(promoted_parent["ID"])
-                folder_map[parent_relative] = parent_id
-                ghost_folders.remove(parent_relative)
-
-            folder: dict | None = None
-            if mkdir_error is None and isinstance(created_id, str) and created_id.isdigit():
-                try:
-                    folder = client.get_item(created_id)
-                except DegooAPIError:
-                    folder = None
-            if folder is None:
-                folder = _resolve_created_item(client, parent_id, folder_name)
-            if folder is None:
-                if mkdir_error is not None:
-                    raise SyncError(f"Could not create remote folder {relative}: {mkdir_error}") from mkdir_error
-                raise SyncError(f"Could not resolve newly created remote folder: {relative}")
-            if not _is_created_folder(client, folder):
-                raise SyncError(
-                    f"Degoo returned a non-folder item for {relative!r}: "
-                    f"ID={folder.get('ID')!r}, Category={folder.get('Category')!r}, "
-                    f"Size={folder.get('Size')!r}"
-                )
-            folder_map[relative] = str(folder["ID"])
-            if _is_folder_ghost(folder):
-                ghost_folders.add(relative)
-                _log(
-                    "INFO",
-                    "Remote directory is a Degoo placeholder; first file upload will promote it",
-                    path=relative,
-                    folder_id=str(folder["ID"]),
-                )
+        upload_parents: dict[str, str] = {relative: root_id for relative in local_files if "/" not in relative}
+        top_level_directories = sorted(
+            (directory for directory in local_directories if "/" not in directory),
+            key=str.casefold,
+        )
+        for relative in top_level_directories:
+            if relative not in directories_with_files:
+                continue
+            for local_path, parent_id in _collect_upload_tasks(
+                client,
+                local_root / relative,
+                root_id,
+            ):
+                local_relative = local_path.relative_to(local_root).as_posix()
+                upload_parents[local_relative] = parent_id
 
         def pending_uploads() -> Iterator[tuple[str, LocalFile, RemoteFile | None, str]]:
             for relative, local in local_files.items():
@@ -526,8 +386,7 @@ def run_sync(
                 if remote is not None and remote.size == local.size:
                     if cached is None or _fingerprint_matches(local, cached):
                         continue
-                parent_relative, _, _ = relative.rpartition("/")
-                parent_id = folder_map.get(parent_relative)
+                parent_id = upload_parents.get(relative)
                 if parent_id is None:
                     raise SyncError(f"Remote parent folder is missing for {relative}")
                 yield relative, local, remote, parent_id
@@ -627,21 +486,6 @@ def run_sync(
         completed = 0
         failures: list[str] = []
         state_updates: list[tuple[str, int, int]] = []
-        for ghost_path in sorted(ghost_folders, key=lambda item: (item.count("/"), item)):
-            if ghost_path not in directories_with_files:
-                continue
-            parent_relative, _, folder_name = ghost_path.rpartition("/")
-            parent_id = folder_map.get(parent_relative)
-            if parent_id is None:
-                raise SyncError(f"Remote parent folder is missing for placeholder {ghost_path}")
-            promoted_folder = _promote_folder_placeholder(
-                client,
-                folder_map[ghost_path],
-                parent_id,
-                folder_name,
-            )
-            folder_map[ghost_path] = str(promoted_folder["ID"])
-            ghost_folders.remove(ghost_path)
 
         iterator = iter(pending_uploads())
         max_pending = max(workers, workers * 2)
