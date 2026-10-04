@@ -6,8 +6,10 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import sqlite3
 import sys
+import tempfile
 import time
 import uuid
 from collections import deque
@@ -49,6 +51,23 @@ class SyncSummary:
 
 class SyncError(RuntimeError):
     """Raised when a sync cannot safely complete."""
+
+
+def _is_buffered_reader_upload_artifact(client: DegooClient, item: RemoteFile) -> bool:
+    """Check whether a small remote file contains the broken upload's repr text."""
+    if item.size > 4096:
+        return False
+
+    with tempfile.TemporaryDirectory(prefix="cligoo-upload-check-") as temp_dir:
+        downloaded = client.download(
+            item.item_id,
+            temp_dir,
+            name="upload-check",
+            overwrite=True,
+        )
+        content = downloaded.read_bytes()
+
+    return re.fullmatch(rb"""<_io\.BufferedReader name=(['"]).+\1>""", content) is not None
 
 
 def _resolve_created_item(client: DegooClient, parent_id: str, name: str) -> dict | None:
@@ -379,10 +398,32 @@ def run_sync(
                 continue
             conflicting_file = remote_files.get(relative)
             if conflicting_file is not None:
-                raise SyncError(
-                    f"Remote file conflicts with local directory {relative!r} "
-                    f"(item ID {conflicting_file.item_id}); refusing to replace it"
+                if not _is_buffered_reader_upload_artifact(client, conflicting_file):
+                    raise SyncError(
+                        f"Remote file conflicts with local directory {relative!r} "
+                        f"(item ID {conflicting_file.item_id}); refusing to replace it"
+                    )
+                _log(
+                    "WARN",
+                    "Moving malformed file-object upload to Degoo recycle bin to restore directory path",
+                    path=relative,
+                    item_id=conflicting_file.item_id,
+                    size_bytes=conflicting_file.size,
                 )
+                client.delete([conflicting_file.item_id], permanent=False)
+                parent_relative, _, folder_name = relative.rpartition("/")
+                parent_id = remote_folders.get(parent_relative)
+                if parent_id is None:
+                    raise SyncError(f"Remote parent folder is missing for conflicting item {relative!r}")
+                for attempt in range(6):
+                    remaining = client.resolve_path_under(parent_id, folder_name)
+                    if remaining is None or client.is_folder(remaining):
+                        break
+                    if attempt < 5:
+                        time.sleep(5)
+                else:
+                    raise SyncError(f"Malformed remote file {relative!r} remains after moving it to the recycle bin")
+                remote_files.pop(relative)
         from .cli import _collect_upload_tasks
 
         upload_parents: dict[str, str] = {relative: root_id for relative in local_files if "/" not in relative}
