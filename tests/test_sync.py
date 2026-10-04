@@ -25,6 +25,7 @@ class FakeDegooClient:
         self.fail_upload = False
         self.fail_rename_on_call: int | None = None
         self.rename_calls = 0
+        self.mkdir_returns_bool = False
 
     @staticmethod
     def is_folder(item: dict) -> bool:
@@ -38,7 +39,7 @@ class FakeDegooClient:
         folders = [item for item in candidates if self.is_folder(item)]
         return folders[0] if folders else (candidates[0] if candidates else None)
 
-    def mkdir(self, name: str, parent_id: str) -> str:
+    def mkdir(self, name: str, parent_id: str) -> str | bool:
         item_id = str(self.next_id)
         self.next_id += 1
         item = {"ID": item_id, "Name": name, "Category": 2, "ParentID": parent_id, "Size": 0}
@@ -46,7 +47,7 @@ class FakeDegooClient:
         self.children.setdefault(parent_id, []).append(item)
         self.children[item_id] = []
         self.events.append(("mkdir", name))
-        return item_id
+        return True if self.mkdir_returns_bool else item_id
 
     def delete(self, item_ids: list[str], *, permanent: bool = False) -> str:
         del permanent
@@ -133,6 +134,29 @@ def test_run_sync_creates_remote_folders_and_uploads_with_delta_state(tmp_path: 
     unchanged = run_sync(client, source, "/Backup", workers=2, state_path=state_path)
     assert unchanged.unchanged_files == 1
     assert unchanged.completed_files == 0
+
+
+def test_run_sync_resolves_folders_when_mkdir_returns_boolean(tmp_path: Path):
+    source = tmp_path / "source"
+    nested = source / "one" / "two"
+    nested.mkdir(parents=True)
+    (nested / "file.txt").write_text("content")
+    client = FakeDegooClient()
+    client.mkdir_returns_bool = True
+
+    result = run_sync(
+        client,
+        source,
+        "/Backup",
+        workers=1,
+        state_path=tmp_path / "state.sqlite3",
+    )
+
+    assert result.completed_files == 1
+    assert client.events.count(("mkdir", "Backup")) == 1
+    assert client.events.count(("mkdir", "one")) == 1
+    assert client.events.count(("mkdir", "two")) == 1
+    assert client.events.count(("upload", "file.txt")) == 1
 
 
 def test_run_sync_dry_run_does_not_create_remote_items(tmp_path: Path):

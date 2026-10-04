@@ -159,7 +159,7 @@ def ensure_remote_root(client: DegooClient, remote_path: str, *, create: bool) -
                 if item is None:
                     raise SyncError(f"Could not create remote folder {part!r}: {exc}") from exc
             else:
-                if created_id and created_id != "OK" and created_id.isdigit():
+                if isinstance(created_id, str) and created_id.isdigit():
                     parent_id = created_id
                     continue
             if item is None:
@@ -307,7 +307,7 @@ def run_sync(
                 if existing is None or not client.is_folder(existing):
                     raise SyncError(f"Could not create remote folder {relative}: {exc}") from exc
             else:
-                if created_id and created_id != "OK" and created_id.isdigit():
+                if isinstance(created_id, str) and created_id.isdigit():
                     folder_map[relative] = created_id
                     continue
             folder = client.resolve_path_under(parent_id, folder_name)
