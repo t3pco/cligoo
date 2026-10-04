@@ -96,12 +96,8 @@ def _is_created_folder(client: DegooClient, item: dict) -> bool:
 
 
 def _is_folder_ghost(item: dict) -> bool:
-    """Identify Degoo's empty Category=6 placeholder created by mkdir."""
-    try:
-        size = int(item.get("Size") or 0)
-    except (TypeError, ValueError):
-        return False
-    return str(item.get("Category")) == "6" and size == 0 and not item.get("URL")
+    """Identify Degoo's Category=6 placeholder, which has no download URL."""
+    return str(item.get("Category")) == "6" and not item.get("URL")
 
 
 class SyncState:

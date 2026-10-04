@@ -12,7 +12,7 @@ import pytest
 from cligoo.api import DegooAPIError
 from cligoo.constants import FOLDER_CATEGORIES
 from cligoo.scheduler import _validate_cron_schedule, next_run
-from cligoo.sync import SyncError, run_sync, scan_local_tree
+from cligoo.sync import SyncError, run_sync, scan_local_tree, scan_remote_tree
 
 
 class FakeDegooClient:
@@ -153,6 +153,25 @@ def test_scan_local_tree_returns_relative_paths_and_fingerprints(tmp_path: Path)
     assert files["one/two/item.bin"].size == len(b"content")
     assert files["one/two/item.bin"].mtime_ns == file_path.stat().st_mtime_ns
     assert directories == {"one", "one/two"}
+
+
+def test_scan_remote_tree_treats_cat6_without_url_as_folder_placeholder():
+    client = FakeDegooClient()
+    client.items["1"] = {
+        "ID": "1",
+        "Name": "p56",
+        "Category": 6,
+        "ParentID": "root",
+        "Size": 99,
+        "URL": "",
+    }
+    client.children["root"] = [client.items["1"]]
+    client.children["1"] = []
+
+    files, folders = scan_remote_tree(client, "root")
+
+    assert "p56" not in files
+    assert folders["p56"] == "1"
 
 
 def test_run_sync_creates_remote_folders_and_uploads_with_delta_state(tmp_path: Path):
