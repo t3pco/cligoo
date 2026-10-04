@@ -2,7 +2,7 @@
 
 Covers:
 - DEFAULT_HEADERS isolation: each DegooClient gets an independent header dict
-  so httpx normalisation on one instance never mutates the shared module-level
+  so client normalisation on one instance never mutates the shared module-level
   dict or another client's headers.
 - Token passthrough: when a token is supplied to the constructor the client
   returns it via `.token` without making a second call to get_token().
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, call, patch
 
-import httpx
+from curl_cffi.requests.errors import RequestsError
 
 from cligoo.api import DegooAPIError, DegooClient
 from cligoo.constants import DEFAULT_HEADERS
@@ -26,7 +26,7 @@ def test_client_headers_are_independent_of_module_dict():
     """Mutating a client's HTTP headers must not change DEFAULT_HEADERS."""
     client = DegooClient(token="test-token")
     try:
-        # Simulate what httpx does: normalise header names to lowercase
+        # Simulate client header normalization.
         client._http.headers["x-injected"] = "yes"
 
         assert "x-injected" not in DEFAULT_HEADERS
@@ -55,6 +55,15 @@ def test_default_headers_unchanged_after_client_creation():
         assert dict(DEFAULT_HEADERS) == snapshot
     finally:
         client.close()
+
+
+def test_client_uses_chrome_impersonation():
+    """GraphQL sessions must use Chromium TLS impersonation."""
+    with patch("cligoo.api.curl_requests.Session") as session_factory:
+        client = DegooClient(token="test-token")
+        client.close()
+
+    assert session_factory.call_args.kwargs["impersonate"] == "chrome124"
 
 
 # ── Token passthrough ──────────────────────────────────────────────────────────
@@ -101,8 +110,8 @@ def test_token_fetched_on_every_access_for_auto_refresh():
 
 
 def _make_gcs_response(status_code: int, text: str = "") -> MagicMock:
-    """Return a mock httpx.Response with the given status_code."""
-    resp = MagicMock(spec=httpx.Response)
+    """Return a mock upload response with the given status_code."""
+    resp = MagicMock()
     resp.status_code = status_code
     resp.text = text
     return resp
@@ -112,7 +121,7 @@ def _upload_with_gcs_mock(tmp_path, gcs_side_effects, upload_retries=3):
     """Helper: run DegooClient.upload() with mocked Degoo GQL and GCS POST.
 
     *gcs_side_effects* is a list of return values / exceptions for successive
-    calls to ``httpx.post`` (the GCS upload POST only — Degoo GQL calls go
+    calls to ``curl_requests.post`` (the GCS upload POST only — Degoo GQL calls go
     through a separate mock).
 
     Returns the (call_count, raised_exception_or_None) tuple.
@@ -139,7 +148,7 @@ def _upload_with_gcs_mock(tmp_path, gcs_side_effects, upload_retries=3):
     with (
         patch("cligoo.api.get_token", return_value="tok"),
         patch.object(DegooClient, "_gql", side_effect=[gql_data_auth, gql_data_register]),
-        patch("cligoo.api.httpx.post", gcs_mock),
+        patch("cligoo.api.curl_requests.post", gcs_mock),
         patch("cligoo.api.time.sleep"),  # skip backoff delays in tests
     ):
         client = DegooClient(token="tok")
@@ -162,7 +171,7 @@ def test_gcs_upload_succeeds_first_attempt(tmp_path):
 def test_gcs_upload_retries_on_network_error_then_succeeds(tmp_path):
     """Network error on attempt 1, success on attempt 2."""
     effects = [
-        httpx.ConnectError("connection reset"),
+        RequestsError("connection reset"),
         _make_gcs_response(200),
     ]
     call_count, exc = _upload_with_gcs_mock(tmp_path, effects, upload_retries=3)
@@ -183,7 +192,7 @@ def test_gcs_upload_retries_on_5xx_then_succeeds(tmp_path):
 
 def test_gcs_upload_exhausts_all_retries_and_raises(tmp_path):
     """All attempts fail with network errors → DegooAPIError after retries exhausted."""
-    effects = [httpx.ConnectError("reset")] * 4  # more than upload_retries=3
+    effects = [RequestsError("reset")] * 4  # more than upload_retries=3
     call_count, exc = _upload_with_gcs_mock(tmp_path, effects, upload_retries=3)
     assert isinstance(exc, DegooAPIError)
     assert "retries" in str(exc).lower()
@@ -201,7 +210,7 @@ def test_gcs_upload_does_not_retry_on_4xx(tmp_path):
 
 def test_gcs_upload_zero_retries_tries_once(tmp_path):
     """upload_retries=0 means try once; failure raises immediately."""
-    effects = [httpx.ConnectError("reset")]
+    effects = [RequestsError("reset")]
     call_count, exc = _upload_with_gcs_mock(tmp_path, effects, upload_retries=0)
     assert isinstance(exc, DegooAPIError)
     assert call_count == 1
@@ -210,8 +219,8 @@ def test_gcs_upload_zero_retries_tries_once(tmp_path):
 def test_gcs_upload_backoff_called_between_retries(tmp_path):
     """time.sleep is called once between each retry (not before the first attempt)."""
     effects = [
-        httpx.ConnectError("reset"),
-        httpx.ConnectError("reset"),
+        RequestsError("reset"),
+        RequestsError("reset"),
         _make_gcs_response(200),
     ]
     fp = tmp_path / "f.bin"
@@ -232,7 +241,7 @@ def test_gcs_upload_backoff_called_between_retries(tmp_path):
     with (
         patch("cligoo.api.get_token", return_value="tok"),
         patch.object(DegooClient, "_gql", side_effect=[gql_data_auth, gql_data_register]),
-        patch("cligoo.api.httpx.post", side_effect=effects),
+        patch("cligoo.api.curl_requests.post", side_effect=effects),
         patch("cligoo.api.time.sleep") as mock_sleep,
     ):
         client = DegooClient(token="tok")

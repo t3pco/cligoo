@@ -168,7 +168,8 @@ Worker helpers: `_upload_one`, `_collect_upload_tasks`, `_download_one`,
 ### 6 — Upload progress
 
 `_ProgressFile` (in `api.py`) wraps a file path, intercepts every `read()`
-call made by httpx, and invokes a `progress_callback(bytes_read, total)`.
+call made by the `curl_cffi` multipart request, and invokes a
+`progress_callback(bytes_read, total)`.
 This is necessary because the GCS multipart POST is a single atomic request —
 there is no per-chunk callback at the HTTP layer.
 

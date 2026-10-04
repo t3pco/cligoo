@@ -148,11 +148,9 @@ def test_check_login_backoff_corrupted_file_is_deleted_and_returns_none(tmp_path
 
 def test_login_raises_rate_limit_error_on_429(tmp_path):
     """login() must immediately raise a friendly rate-limit AuthError on 429."""
-    import httpx
-
     from cligoo.auth import login
 
-    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp = MagicMock()
     mock_resp.status_code = 429
     mock_resp.text = ""
 
@@ -160,9 +158,29 @@ def test_login_raises_rate_limit_error_on_429(tmp_path):
     with (
         patch("cligoo.auth._LOGIN_BACKOFF_FILE", backoff_file),
         patch("cligoo.auth._check_login_backoff", return_value=None),
-        patch("httpx.post", return_value=mock_resp),
+        patch("cligoo.auth.curl_requests.post", return_value=mock_resp) as mock_post,
     ):
         with pytest.raises(AuthError, match="rate-limited"):
             login("user@example.com", "password", save=False)
 
     assert backoff_file.exists(), "backoff file must be written on 429"
+    assert mock_post.call_args.kwargs["impersonate"] == "chrome124"
+
+
+def test_refresh_request_uses_chrome_impersonation():
+    from cligoo.auth import _exchange_refresh_token
+    from cligoo.constants import TOKEN_REFRESH_URL
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"Token": "access-token"}
+
+    with patch("cligoo.auth.curl_requests.post", return_value=mock_resp) as mock_post:
+        assert _exchange_refresh_token("refresh-token") == "access-token"
+
+    mock_post.assert_called_once_with(
+        TOKEN_REFRESH_URL,
+        json={"RefreshToken": "refresh-token"},
+        timeout=30,
+        impersonate="chrome124",
+    )

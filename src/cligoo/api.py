@@ -1,6 +1,6 @@
 """Degoo GraphQL API client.
 
-Thin wrapper around httpx that sends authenticated GraphQL requests
+Thin wrapper around curl_cffi that sends authenticated GraphQL requests
 and returns parsed results.
 """
 
@@ -12,7 +12,9 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional
 
-import httpx
+from curl_cffi import CurlMime
+from curl_cffi import requests as curl_requests
+from curl_cffi.requests.errors import RequestsError
 
 from .auth import get_token
 from .constants import (
@@ -58,8 +60,8 @@ class DegooAlreadyExistsError(DegooAPIError):
 class _ProgressFile:
     """Read-only file wrapper that calls *callback(bytes_read, total)* on each chunk.
 
-    Passed to ``httpx.post`` as the file body so upload progress is reported
-    incrementally as httpx reads from it for the multipart form POST.
+    Passed to ``curl_requests.post`` as the file body so upload progress is
+    reported incrementally as it reads from it for the multipart form POST.
     """
 
     def __init__(self, path: Path, total: int, callback: Callable[[int, int], None]) -> None:
@@ -77,7 +79,7 @@ class _ProgressFile:
     def close(self) -> None:
         self._f.close()
 
-    # httpx inspects __len__ to set Content-Length — expose the total size
+    # The request client inspects __len__ to set Content-Length.
     def __len__(self) -> int:
         return self._total
 
@@ -100,24 +102,27 @@ class DegooClient:
         self._graphql_url = graphql_url or get_graphql_url() or GRAPHQL_URL
         self._debug = debug if debug is not None else get_api_debug()
 
-        # Copy DEFAULT_HEADERS so httpx normalisation (lower-casing keys etc.)
-        # never mutates the shared module-level dict.
+        # Copy DEFAULT_HEADERS so client header normalization never mutates the
+        # shared module-level dict.
         if self._debug:
             import sys
 
-            def _log_req(req: httpx.Request) -> None:
-                print(f"[DEBUG] --> {req.method} {req.url}", file=sys.stderr)
-
-            def _log_resp(resp: httpx.Response) -> None:
+            def _log_resp(resp: Any, *_args: Any, **_kwargs: Any) -> None:
+                del _args, _kwargs
                 print(f"[DEBUG] <-- {resp.status_code} {resp.url}", file=sys.stderr)
 
-            self._http = httpx.Client(
+            self._http = curl_requests.Session(
                 headers=dict(DEFAULT_HEADERS),
                 timeout=self._timeout,
-                event_hooks={"request": [_log_req], "response": [_log_resp]},
+                impersonate="chrome124",
+                hooks={"response": [_log_resp]},
             )
         else:
-            self._http = httpx.Client(headers=dict(DEFAULT_HEADERS), timeout=self._timeout)
+            self._http = curl_requests.Session(
+                headers=dict(DEFAULT_HEADERS),
+                timeout=self._timeout,
+                impersonate="chrome124",
+            )
 
     def close(self) -> None:
         """Close the underlying HTTP connection pool."""
@@ -165,6 +170,10 @@ class DegooClient:
         if operation:
             body["operationName"] = operation
 
+        if self._debug:
+            import sys
+
+            print(f"[DEBUG] --> POST {self._graphql_url}", file=sys.stderr)
         resp = self._http.post(self._graphql_url, json=body)
         resp.raise_for_status()
         payload = resp.json()
@@ -621,9 +630,22 @@ class DegooClient:
                     pf = _ProgressFile(filepath, size, progress_callback)
                 else:
                     pf = open(filepath, "rb")  # noqa: WPS515
-                files = {"file": (filename, pf, content_type)}
-                upload_resp = httpx.post(base_url, data=form_data, files=files, timeout=600)
-            except httpx.RequestError as exc:
+                multipart = CurlMime()
+                for field_name, field_value in form_data.items():
+                    multipart.addpart(name=field_name, data=str(field_value))
+                multipart.addpart(
+                    name="file",
+                    filename=filename,
+                    content_type=content_type,
+                    data=pf,
+                )
+                upload_resp = curl_requests.post(
+                    base_url,
+                    multipart=multipart,
+                    timeout=600,
+                    impersonate="chrome124",
+                )
+            except RequestsError as exc:
                 last_exc = exc
                 continue  # network drop — retry
             finally:
@@ -750,16 +772,23 @@ class DegooClient:
         if not overwrite:
             dest = self._unique_local_path(dest)
 
-        with httpx.stream("GET", url, follow_redirects=True, timeout=600) as resp:
+        with curl_requests.get(
+            url,
+            allow_redirects=True,
+            timeout=600,
+            stream=True,
+            impersonate="chrome124",
+        ) as resp:
             resp.raise_for_status()
             total = int(resp.headers.get("content-length", 0))
             downloaded = 0
             with open(dest, "wb") as f:
-                for chunk in resp.iter_bytes(chunk_size=65536):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if progress_callback:
-                        progress_callback(downloaded, total)
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if progress_callback:
+                            progress_callback(downloaded, total)
 
         return dest
 

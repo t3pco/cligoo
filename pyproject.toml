@@ -36,6 +36,7 @@ dependencies = [
     "pyjwt>=2.0",
     "tomli>=1.2 ; python_version < '3.11'",
     "tomli-w>=1.0",
+    "curl_cffi>=0.7.1",
 ]
 
 [project.optional-dependencies]

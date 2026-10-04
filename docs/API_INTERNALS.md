@@ -194,8 +194,8 @@ the community project that informed `cligoo`'s API work.
 
 The key is resolved once at module import time by `_resolve_api_key()` in
 `constants.py`. `DEFAULT_HEADERS` is built from the resolved value and then
-**copied** (not referenced) by each `DegooClient` instance so httpx header
-normalisation cannot mutate the shared module-level dict.
+**copied** (not referenced) by each `DegooClient` instance. The API client
+uses `curl_cffi` with Chrome 124 TLS impersonation and Chromium browser headers.
 
 ### 3e. Google OAuth / Refresh Token via Browser
 
@@ -916,22 +916,12 @@ Key observations:
 - The `progress_callback(downloaded, total)` signature is called on every
   `chunk_size=65536` chunk, giving real-time streaming progress.
 
-### 9c. Upload Progress Limitation
+### 9c. Upload Progress
 
-The `progress_callback` parameter is accepted by `DegooClient.upload()` but
-**is not called during the GCS POST** in the current implementation.  The
-upload to Google Cloud Storage is performed as an atomic multipart `httpx.post`
-call — httpx's synchronous API does not emit per-chunk callbacks for outgoing
-data.
-
-Consequence for the CLI: upload tasks show a **spinner** (indeterminate) while
-the transfer is in flight; the bar jumps to 100 % only after `httpx.post`
-returns.  This is accurate but not incremental.  Download tasks show real
-incremental progress.
-
-A future improvement could wrap the file handle in a `_ProgressFile` shim that
-intercepts `read()` calls and forwards byte counts to the callback — this would
-work without changes to the httpx call site.
+`DegooClient.upload()` wraps the file handle in `_ProgressFile` and supplies it
+to the native `curl_cffi.CurlMime` multipart body. As the request reads the file,
+the wrapper invokes `progress_callback(bytes_read, total)`, enabling incremental
+upload progress in the CLI.
 
 ---
 
@@ -1269,10 +1259,8 @@ between the two calls.
 
 ### 18b. `DEFAULT_HEADERS` is a shared module-level dict — always copy it
 
-`httpx.Client` normalises header keys to lowercase internally. If you pass the
-shared `DEFAULT_HEADERS` dict directly, httpx may mutate it and corrupt the
-module-level dict for all future `DegooClient` instances in the same process.
-Always pass `dict(DEFAULT_HEADERS)` (a shallow copy) to `httpx.Client`.
+Each `DegooClient` must pass `dict(DEFAULT_HEADERS)` to its `curl_cffi` session.
+This keeps per-client headers isolated from the shared module-level defaults.
 
 ### 18c. `save_config()` must be atomic
 

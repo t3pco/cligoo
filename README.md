@@ -16,6 +16,7 @@ A command-line interface for [Degoo](https://degoo.com) cloud storage, built on 
 ## Table of Contents
 
 - [Installation](#installation)
+- [Docker](#docker)
 - [Quick Start](#quick-start)
 - [Common Workflows](#common-workflows)
   - [Browsing your cloud storage](#browsing-your-cloud-storage)
@@ -74,6 +75,35 @@ pip install git+https://github.com/marcomc/cligoo.git
 | `pip install` | `pip uninstall cligoo` |
 
 **Requirements:** Python 3.9+
+
+---
+
+## Docker
+
+Build the image locally and run the CLI:
+
+```bash
+docker build -t cligoo .
+docker run --rm cligoo --help
+```
+
+Persist authentication data in a named volume and use the current directory for
+uploads and downloads:
+
+```bash
+docker run --rm -it \
+  -v cligoo-config:/home/cligoo/.config/cligoo \
+  -v "$PWD:/data" \
+  cligoo login
+
+docker run --rm \
+  -v cligoo-config:/home/cligoo/.config/cligoo \
+  -v "$PWD:/data" \
+  cligoo ls /
+```
+
+The image runs as a non-root user. The default command displays CLI help; pass
+any supported `cligoo` command after the image name.
 
 ---
 

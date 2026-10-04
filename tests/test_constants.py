@@ -44,6 +44,11 @@ def test_default_headers():
     assert "x-api-key" in DEFAULT_HEADERS
     assert "Content-Type" in DEFAULT_HEADERS
     assert DEFAULT_HEADERS["Content-Type"] == "application/json"
+    assert DEFAULT_HEADERS["Referer"] == "https://app.degoo.com/"
+    assert "Chromium" in DEFAULT_HEADERS["Sec-Ch-Ua"]
+    assert DEFAULT_HEADERS["Sec-Ch-Ua-Mobile"] == "?0"
+    assert DEFAULT_HEADERS["Sec-Ch-Ua-Platform"] == '"Windows"'
+    assert DEFAULT_HEADERS["User-Agent"].startswith("Mozilla/5.0")
 
 
 def test_category_names():

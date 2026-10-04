@@ -13,8 +13,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
-import httpx
 import jwt
+from curl_cffi import requests as curl_requests
 
 from .constants import LOGIN_URL, TOKEN_REFRESH_URL
 
@@ -269,7 +269,7 @@ def _token_expired(token: str, margin: int = 60) -> bool:
         return True
 
 
-def _api_error_message(resp: "httpx.Response") -> str:
+def _api_error_message(resp: "curl_requests.Response") -> str:
     """Return a human-readable error from an API response.
 
     Cloudflare rate-limit and WAF pages return HTML or empty bodies — strip
@@ -298,10 +298,11 @@ def login(email: str, password: str, *, save: bool = True) -> str:
             "  (Degoo limits how often you can log in with email/password.)"
         )
 
-    resp = httpx.post(
+    resp = curl_requests.post(
         LOGIN_URL,
         json={"GenerateToken": True, "Username": email, "Password": password},
         timeout=30,
+        impersonate="chrome124",
     )
     if resp.status_code == 429:
         _set_login_backoff()
@@ -333,10 +334,11 @@ def login(email: str, password: str, *, save: bool = True) -> str:
 
 def _exchange_refresh_token(refresh_token: str) -> str:
     """Exchange a refresh token for a short-lived access token."""
-    resp = httpx.post(
+    resp = curl_requests.post(
         TOKEN_REFRESH_URL,
         json={"RefreshToken": refresh_token},
         timeout=30,
+        impersonate="chrome124",
     )
     if resp.status_code != 200:
         raise AuthError(f"Token refresh failed (HTTP {resp.status_code}): {_api_error_message(resp)}")
