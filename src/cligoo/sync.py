@@ -73,7 +73,16 @@ def _resolve_created_item(client: DegooClient, parent_id: str, name: str) -> dic
 
 def _is_created_folder(client: DegooClient, item: dict) -> bool:
     """Accept Degoo's temporary Category=6 folder ghost returned after mkdir."""
-    return client.is_folder(item) or str(item.get("Category")) == "6"
+    return client.is_folder(item) or _is_folder_ghost(item)
+
+
+def _is_folder_ghost(item: dict) -> bool:
+    """Identify Degoo's empty Category=6 placeholder created by mkdir."""
+    try:
+        size = int(item.get("Size") or 0)
+    except (TypeError, ValueError):
+        return False
+    return str(item.get("Category")) == "6" and size == 0 and not item.get("URL")
 
 
 class SyncState:
@@ -213,7 +222,7 @@ def scan_remote_tree(client: DegooClient, root_folder_id: str) -> tuple[dict[str
                 if relative in files or relative in folders:
                     raise SyncError(f"Multiple remote items map to the same path: {relative}")
                 item_id = str(item["ID"])
-                if client.is_folder(item):
+                if client.is_folder(item) or _is_folder_ghost(item):
                     folders[relative] = item_id
                     pending.append((item_id, relative))
                 else:
@@ -321,6 +330,12 @@ def run_sync(
         for relative in sorted(local_directories, key=lambda item: (item.count("/"), item)):
             if relative in folder_map:
                 continue
+            conflicting_file = remote_files.get(relative)
+            if conflicting_file is not None:
+                raise SyncError(
+                    f"Remote file conflicts with local directory {relative!r} "
+                    f"(item ID {conflicting_file.item_id}); refusing to replace it"
+                )
             parent_relative, _, folder_name = relative.rpartition("/")
             parent_id = folder_map.get(parent_relative)
             if parent_id is None:

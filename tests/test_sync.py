@@ -192,6 +192,59 @@ def test_run_sync_retries_folder_lookup_after_eventual_visibility(tmp_path: Path
     assert [call.args for call in sleep.call_args_list].count((5,)) == 2
 
 
+def test_run_sync_reuses_empty_degoo_folder_placeholder(tmp_path: Path):
+    source = tmp_path / "source"
+    nested = source / "_lo"
+    nested.mkdir(parents=True)
+    (nested / "file.txt").write_text("content")
+    client = FakeDegooClient()
+    target = {"ID": "1", "Name": "Backup", "Category": 2, "ParentID": "0", "Size": 0, "URL": ""}
+    ghost = {"ID": "2", "Name": "_lo", "Category": 6, "ParentID": "1", "Size": 0, "URL": ""}
+    client.items.update({"1": target, "2": ghost})
+    client.children["0"].append(target)
+    client.children["1"] = [ghost]
+    client.children["2"] = []
+    client.next_id = 3
+
+    result = run_sync(
+        client,
+        source,
+        "/Backup",
+        workers=1,
+        state_path=tmp_path / "state.sqlite3",
+    )
+
+    assert result.completed_files == 1
+    assert ("mkdir", "_lo") not in client.events
+    uploaded = next(item for item in client.items.values() if item["Name"] == "file.txt")
+    assert uploaded["ParentID"] == "2"
+
+
+def test_run_sync_refuses_remote_file_conflicting_with_local_directory(tmp_path: Path):
+    source = tmp_path / "source"
+    nested = source / "_lo"
+    nested.mkdir(parents=True)
+    (nested / "file.txt").write_text("content")
+    client = FakeDegooClient()
+    target = {"ID": "1", "Name": "Backup", "Category": 2, "ParentID": "0", "Size": 0, "URL": ""}
+    conflict = {"ID": "2", "Name": "_lo", "Category": 0, "ParentID": "1", "Size": 1, "URL": "file"}
+    client.items.update({"1": target, "2": conflict})
+    client.children["0"].append(target)
+    client.children["1"] = [conflict]
+    client.next_id = 3
+
+    with pytest.raises(SyncError, match="Remote file conflicts with local directory"):
+        run_sync(
+            client,
+            source,
+            "/Backup",
+            workers=1,
+            state_path=tmp_path / "state.sqlite3",
+        )
+
+    assert not any(event == ("mkdir", "_lo") for event in client.events)
+
+
 def test_run_sync_dry_run_does_not_create_remote_items(tmp_path: Path):
     source = tmp_path / "source"
     source.mkdir()
