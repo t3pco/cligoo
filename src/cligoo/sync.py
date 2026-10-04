@@ -34,6 +34,8 @@ class LocalFile:
 class RemoteFile:
     item_id: str
     size: int
+    category: object = 0
+    has_download_url: bool = True
 
 
 @dataclass(frozen=True)
@@ -54,9 +56,11 @@ class SyncError(RuntimeError):
 
 
 def _is_buffered_reader_upload_artifact(client: DegooClient, item: RemoteFile) -> bool:
-    """Check whether a small remote file contains the broken upload's repr text."""
+    """Check whether an inaccessible small item is an orphan or has broken contents."""
     if item.size > 4096:
         return False
+    if not item.has_download_url:
+        return str(item.category) == "0"
 
     with tempfile.TemporaryDirectory(prefix="cligoo-upload-check-") as temp_dir:
         downloaded = client.download(
@@ -285,7 +289,12 @@ def scan_remote_tree(client: DegooClient, root_folder_id: str) -> tuple[dict[str
                         size = int(item.get("Size") or 0)
                     except (TypeError, ValueError) as exc:
                         raise SyncError(f"Remote item has an invalid size: {relative}") from exc
-                    files[relative] = RemoteFile(item_id, size)
+                    files[relative] = RemoteFile(
+                        item_id,
+                        size,
+                        category=item.get("Category"),
+                        has_download_url=bool(item.get("URL")),
+                    )
         except DegooAPIError as exc:
             raise SyncError(f"Could not list remote folder {parent_relative or '/'}: {exc}") from exc
 
@@ -401,10 +410,12 @@ def run_sync(
                     )
                 _log(
                     "WARN",
-                    "Moving malformed file-object upload to Degoo recycle bin to restore directory path",
+                    "Moving malformed or inaccessible remote file to Degoo recycle bin to restore directory path",
                     path=relative,
                     item_id=conflicting_file.item_id,
                     size_bytes=conflicting_file.size,
+                    category=conflicting_file.category,
+                    has_download_url=conflicting_file.has_download_url,
                 )
                 client.delete([conflicting_file.item_id], permanent=False)
                 parent_relative, _, folder_name = relative.rpartition("/")
