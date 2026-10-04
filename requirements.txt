@@ -5,6 +5,7 @@ keyring>=24.0
 humanize>=4.0
 pyjwt>=2.0
 curl_cffi>=0.7.1
+croniter>=2.0
 
 # Optional: browser-based token refresh (cligoo token --update)
 # pip install 'cligoo[browser]' && playwright install chromium

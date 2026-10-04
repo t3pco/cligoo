@@ -13,6 +13,7 @@ setup(
         "humanize>=4.0",
         "pyjwt>=2.0",
         "curl_cffi>=0.7.1",
+        "croniter>=2.0",
     ],
     extras_require={
         "dev": ["pytest>=7.0", "pytest-cov", "ruff"],

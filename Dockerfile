@@ -10,7 +10,14 @@ LABEL org.opencontainers.image.title="cligoo" \
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    HOME=/home/cligoo
+    HOME=/home/cligoo \
+    SYNC_SOURCE=/data \
+    SYNC_TARGET=/Backup \
+    SYNC_WORKERS=4 \
+    SYNC_STATE_FILE=/home/cligoo/.config/cligoo/sync-state.sqlite3 \
+    RUN_ON_STARTUP=true \
+    CRON_SCHEDULE="0 1,13 * * *" \
+    SYNC_HEARTBEAT_INTERVAL=60
 
 # Install system dependencies & useful tools for backup scripts
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -52,4 +59,4 @@ WORKDIR /data
 VOLUME ["/home/cligoo/.config/cligoo"]
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["--help"]
+CMD ["python", "-u", "/scripts/schedule_sync.py"]

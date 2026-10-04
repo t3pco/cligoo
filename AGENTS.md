@@ -68,7 +68,9 @@ src/cligoo/
   config.py       Read/write ~/.config/cligoo/config.toml; get_* helpers
   constants.py    API endpoints, category IDs, default headers, config paths
   queries.py      GraphQL query and mutation strings (no logic — strings only)
+  scheduler.py    Environment-configured recurring Docker backup scheduler
   shell.py        DegooShell (cmd.Cmd REPL); all `cligoo shell` built-in commands
+  sync.py         Local-to-Degoo delta backup engine used by the Docker scheduler
 
 tests/
   test_api_client.py   DegooClient header isolation, token passthrough

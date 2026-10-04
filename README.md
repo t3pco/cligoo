@@ -78,32 +78,59 @@ pip install git+https://github.com/marcomc/cligoo.git
 
 ---
 
-## Docker
-
-Build the image locally and run the CLI:
+## Docker backup
 
 ```bash
 docker build -t cligoo .
-docker run --rm cligoo --help
 ```
 
-Persist authentication data in a named volume and use the current directory for
-uploads and downloads:
+The image starts a delta backup on container startup and then at 01:00 and
+13:00 container-local time. Mount the source directory read-only and persist
+authentication and delta state in the config volume:
 
 ```bash
-docker run --rm -it \
+docker run -it --rm \
   -v cligoo-config:/home/cligoo/.config/cligoo \
-  -v "$PWD:/data" \
+  -v /host/path/to/source:/data:ro \
   cligoo login
 
-docker run --rm \
+docker run -d --name cligoo-backup --restart unless-stopped \
   -v cligoo-config:/home/cligoo/.config/cligoo \
-  -v "$PWD:/data" \
-  cligoo ls /
+  -v /host/path/to/source:/data:ro \
+  -e SYNC_SOURCE=/data \
+  -e SYNC_TARGET=/Backup \
+  -e SYNC_WORKERS=4 \
+  -e CRON_SCHEDULE="0 1,13 * * *" \
+  -e TZ=Europe/Berlin \
+  cligoo
 ```
 
-The image runs as a non-root user. The default command displays CLI help; pass
-any supported `cligoo` command after the image name.
+Set `SYNC_SOURCE` to the mounted source path, `SYNC_TARGET` to the Degoo folder,
+and `SYNC_WORKERS` to control concurrent file uploads. `RUN_ON_STARTUP=false`
+skips the immediate run; `CRON_SCHEDULE` accepts a standard five-field cron
+expression (default: `0 1,13 * * *`). The schedule uses the container timezone,
+which can be set with `TZ`. Set `SYNC_STATE_FILE` only if you want the source
+fingerprint database stored somewhere other than the config volume. A dry run
+is available by overriding the image command:
+
+```bash
+docker run --rm \
+  -v cligoo-config:/home/cligoo/.config/cligoo \
+  -v /host/path/to/source:/data:ro \
+  cligoo python -m cligoo.sync --dry-run
+```
+
+The backup invokes cligoo's `DegooClient.upload`, `rename`, and `delete` APIs;
+it does not reuse the previous branch's separate copy/transfer implementation.
+For changed files, it uploads to a temporary remote name first, then renames the
+existing item to a temporary name, promotes the new item, and moves the old
+version to the recycle bin. Same-size local edits are detected using
+the persisted source size/mtime database. Replaced remote versions are moved to
+Degoo's recycle bin; remote files absent from the local source are retained.
+On the first comparison, existing remote files with the same path and size are
+treated as unchanged because Degoo listings do not expose file checksums.
+Symbolic links in the source are skipped and logged. The image runs as a
+non-root user.
 
 ---
 
