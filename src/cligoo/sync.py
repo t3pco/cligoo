@@ -223,7 +223,14 @@ def scan_remote_tree(client: DegooClient, root_folder_id: str) -> tuple[dict[str
                 item_id = str(item["ID"])
                 if client.is_folder(item) or _is_folder_ghost(item):
                     if relative in files:
-                        raise SyncError(f"Multiple remote items map to the same path: {relative}")
+                        conflicting_file = files.pop(relative)
+                        _log(
+                            "WARN",
+                            "Ignoring remote file that conflicts with a folder of the same name",
+                            path=relative,
+                            file_id=conflicting_file.item_id,
+                            folder_id=item_id,
+                        )
                     if relative in folders:
                         if relative in ghost_folders and client.is_folder(item):
                             ghost_folders.remove(relative)
@@ -232,7 +239,12 @@ def scan_remote_tree(client: DegooClient, root_folder_id: str) -> tuple[dict[str
                             continue
                         if relative in ghost_folders and _is_folder_ghost(item):
                             continue
-                        raise SyncError(f"Multiple remote items map to the same path: {relative}")
+                        if client.is_folder(item):
+                            raise SyncError(
+                                f"Multiple remote folders map to the same path {relative!r}: "
+                                f"IDs {folders[relative]!r} and {item_id!r}"
+                            )
+                        continue
                     folders[relative] = item_id
                     if _is_folder_ghost(item):
                         ghost_folders.add(relative)
@@ -241,9 +253,19 @@ def scan_remote_tree(client: DegooClient, root_folder_id: str) -> tuple[dict[str
                     if relative in folders:
                         if relative in ghost_folders:
                             continue
-                        raise SyncError(f"Multiple remote items map to the same path: {relative}")
+                        _log(
+                            "WARN",
+                            "Ignoring remote file that conflicts with a folder of the same name",
+                            path=relative,
+                            file_id=item_id,
+                            folder_id=folders[relative],
+                        )
+                        continue
                     if relative in files:
-                        raise SyncError(f"Multiple remote items map to the same path: {relative}")
+                        raise SyncError(
+                            f"Multiple remote files map to the same path {relative!r}: "
+                            f"IDs {files[relative].item_id!r} and {item_id!r}"
+                        )
                     try:
                         size = int(item.get("Size") or 0)
                     except (TypeError, ValueError) as exc:
