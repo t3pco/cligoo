@@ -51,6 +51,20 @@ class FakeDegooClient:
     def get_item(self, item_id: str) -> dict:
         return self.items[item_id]
 
+    def download(
+        self,
+        item_id: str,
+        dest: Path,
+        *,
+        name: str | None = None,
+        overwrite: bool = False,
+    ) -> Path:
+        del overwrite
+        item = self.items[item_id]
+        path = Path(dest) / (name or item["Name"])
+        path.write_bytes(item.get("Content", b"x" * int(item.get("Size") or 0)))
+        return path
+
     def mkdir(self, name: str, parent_id: str) -> str | bool:
         if any(item["Name"] == name for item in self.children.get(parent_id, [])):
             raise DegooAPIError("Invalid input")
