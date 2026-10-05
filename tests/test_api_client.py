@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, call, patch
 
-from curl_cffi.requests.errors import RequestsError
+import httpx
 
 from cligoo.api import DegooAPIError, DegooClient
 from cligoo.constants import DEFAULT_HEADERS
@@ -121,7 +121,7 @@ def _upload_with_gcs_mock(tmp_path, gcs_side_effects, upload_retries=3):
     """Helper: run DegooClient.upload() with mocked Degoo GQL and GCS POST.
 
     *gcs_side_effects* is a list of return values / exceptions for successive
-    calls to ``curl_requests.post`` (the GCS upload POST only — Degoo GQL calls go
+    calls to ``httpx.post`` (the GCS upload POST only — Degoo GQL calls go
     through a separate mock).
 
     Returns the (call_count, raised_exception_or_None) tuple.
@@ -148,7 +148,7 @@ def _upload_with_gcs_mock(tmp_path, gcs_side_effects, upload_retries=3):
     with (
         patch("cligoo.api.get_token", return_value="tok"),
         patch.object(DegooClient, "_gql", side_effect=[gql_data_auth, gql_data_register]),
-        patch("cligoo.api.curl_requests.post", gcs_mock),
+        patch("cligoo.api.httpx.post", gcs_mock),
         patch("cligoo.api.time.sleep"),  # skip backoff delays in tests
     ):
         client = DegooClient(token="tok")
@@ -180,7 +180,7 @@ def test_gcs_upload_uses_unknown_key_for_unrecognized_extensions(tmp_path):
         "ACL": None,
         "AdditionalBody": [],
     }
-    mime = MagicMock()
+    gcs_post = MagicMock(return_value=_make_gcs_response(200))
 
     with (
         patch("cligoo.api.get_token", return_value="tok"),
@@ -192,22 +192,63 @@ def test_gcs_upload_uses_unknown_key_for_unrecognized_extensions(tmp_path):
                 {"setUploadFile3": "file-id"},
             ],
         ),
-        patch("cligoo.api.CurlMime", return_value=mime),
-        patch("cligoo.api.curl_requests.post", return_value=_make_gcs_response(200)),
+        patch("cligoo.api.httpx.post", gcs_post),
     ):
         client = DegooClient(token="tok")
         client.upload(fp, "42")
         client.close()
 
-    key_call = next(call for call in mime.addpart.call_args_list if call.kwargs.get("name") == "key")
-    assert key_call.kwargs["data"].startswith("prefix/unknown/")
-    assert key_call.kwargs["data"].endswith(".unknown")
+    form_data = gcs_post.call_args.kwargs["data"]
+    assert form_data["key"].startswith("prefix/unknown/")
+    assert form_data["key"].endswith(".unknown")
+
+
+def test_gcs_upload_multipart_contains_file_bytes_not_reader_repr(tmp_path):
+    """The GCS multipart body must contain bytes read from the file, not repr(file)."""
+    fp = tmp_path / "snapshot.f"
+    payload = b"kopia snapshot contents\x00\xff"
+    fp.write_bytes(payload)
+    auth_data = {
+        "BaseURL": "https://storage.googleapis.com/bucket",
+        "KeyPrefix": "prefix/",
+        "PolicyBase64": "policy",
+        "Signature": "sig",
+        "AccessKey": {"Key": "GoogleAccessId", "Value": "svc"},
+        "ACL": None,
+        "AdditionalBody": [],
+    }
+    captured_body: list[bytes] = []
+
+    def capture_upload(request: httpx.Request) -> httpx.Response:
+        captured_body.append(request.read())
+        return httpx.Response(200, request=request)
+
+    with (
+        patch("cligoo.api.get_token", return_value="tok"),
+        patch.object(
+            DegooClient,
+            "_gql",
+            side_effect=[
+                {"getBucketWriteAuth4": [{"AuthData": auth_data, "Error": None}]},
+                {"setUploadFile3": "file-id"},
+            ],
+        ),
+        httpx.Client(transport=httpx.MockTransport(capture_upload)) as transport,
+        patch("cligoo.api.httpx.post", side_effect=transport.post),
+    ):
+        client = DegooClient(token="tok")
+        client.upload(fp, "42")
+        client.close()
+
+    assert len(captured_body) == 1
+    assert payload in captured_body[0]
+    assert b"<_io.BufferedReader" not in captured_body[0]
 
 
 def test_gcs_upload_retries_on_network_error_then_succeeds(tmp_path):
     """Network error on attempt 1, success on attempt 2."""
     effects = [
-        RequestsError("connection reset"),
+        httpx.ConnectError("connection reset", request=httpx.Request("POST", "https://storage.googleapis.com")),
         _make_gcs_response(200),
     ]
     call_count, exc = _upload_with_gcs_mock(tmp_path, effects, upload_retries=3)
@@ -228,7 +269,9 @@ def test_gcs_upload_retries_on_5xx_then_succeeds(tmp_path):
 
 def test_gcs_upload_exhausts_all_retries_and_raises(tmp_path):
     """All attempts fail with network errors → DegooAPIError after retries exhausted."""
-    effects = [RequestsError("reset")] * 4  # more than upload_retries=3
+    effects = [
+        httpx.ConnectError("reset", request=httpx.Request("POST", "https://storage.googleapis.com"))
+    ] * 4  # more than upload_retries=3
     call_count, exc = _upload_with_gcs_mock(tmp_path, effects, upload_retries=3)
     assert isinstance(exc, DegooAPIError)
     assert "retries" in str(exc).lower()
@@ -246,7 +289,7 @@ def test_gcs_upload_does_not_retry_on_4xx(tmp_path):
 
 def test_gcs_upload_zero_retries_tries_once(tmp_path):
     """upload_retries=0 means try once; failure raises immediately."""
-    effects = [RequestsError("reset")]
+    effects = [httpx.ConnectError("reset", request=httpx.Request("POST", "https://storage.googleapis.com"))]
     call_count, exc = _upload_with_gcs_mock(tmp_path, effects, upload_retries=0)
     assert isinstance(exc, DegooAPIError)
     assert call_count == 1
@@ -255,8 +298,8 @@ def test_gcs_upload_zero_retries_tries_once(tmp_path):
 def test_gcs_upload_backoff_called_between_retries(tmp_path):
     """time.sleep is called once between each retry (not before the first attempt)."""
     effects = [
-        RequestsError("reset"),
-        RequestsError("reset"),
+        httpx.ConnectError("reset", request=httpx.Request("POST", "https://storage.googleapis.com")),
+        httpx.ConnectError("reset", request=httpx.Request("POST", "https://storage.googleapis.com")),
         _make_gcs_response(200),
     ]
     fp = tmp_path / "f.bin"
@@ -277,7 +320,7 @@ def test_gcs_upload_backoff_called_between_retries(tmp_path):
     with (
         patch("cligoo.api.get_token", return_value="tok"),
         patch.object(DegooClient, "_gql", side_effect=[gql_data_auth, gql_data_register]),
-        patch("cligoo.api.curl_requests.post", side_effect=effects),
+        patch("cligoo.api.httpx.post", side_effect=effects),
         patch("cligoo.api.time.sleep") as mock_sleep,
     ):
         client = DegooClient(token="tok")

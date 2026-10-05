@@ -12,9 +12,8 @@ import time
 from pathlib import Path
 from typing import Any, Generator, Optional
 
-from curl_cffi import CurlMime
+import httpx
 from curl_cffi import requests as curl_requests
-from curl_cffi.requests.errors import RequestsError
 
 from .auth import get_token
 from .constants import (
@@ -600,22 +599,14 @@ class DegooClient:
                 time.sleep(backoff)
 
             try:
-                multipart = CurlMime()
-                for field_name, field_value in form_data.items():
-                    multipart.addpart(name=field_name, data=str(field_value))
-                multipart.addpart(
-                    name="file",
-                    filename=filename,
-                    content_type=content_type,
-                    local_path=filepath,
-                )
-                upload_resp = curl_requests.post(
-                    base_url,
-                    multipart=multipart,
-                    timeout=600,
-                    impersonate="chrome124",
-                )
-            except RequestsError as exc:
+                with filepath.open("rb") as file_handle:
+                    upload_resp = httpx.post(
+                        base_url,
+                        data={field_name: str(field_value) for field_name, field_value in form_data.items()},
+                        files={"file": (filename, file_handle, content_type)},
+                        timeout=600,
+                    )
+            except httpx.RequestError as exc:
                 last_exc = exc
                 continue  # network drop — retry
 
