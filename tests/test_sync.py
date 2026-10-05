@@ -432,6 +432,41 @@ def test_upload_logs_start_finish_and_runtime(tmp_path: Path, capsys: pytest.Cap
     assert result.completed_files == 1
 
 
+def test_run_sync_skips_files_changed_after_scan_until_next_run(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    file_path = source / "file.txt"
+    file_path.write_text("before")
+    client = FakeDegooClient()
+    original_mkdir = client.mkdir
+
+    def mutate_source_after_folder_creation(name: str, parent_id: str) -> str | bool:
+        result = original_mkdir(name, parent_id)
+        file_path.write_text("changed while syncing")
+        return result
+
+    monkeypatch.setattr(client, "mkdir", mutate_source_after_folder_creation)
+
+    result = run_sync(
+        client,
+        source,
+        "/Backup",
+        workers=1,
+        state_path=tmp_path / "state.sqlite3",
+    )
+
+    logs = capsys.readouterr().out
+    assert result.completed_files == 0
+    assert result.failed_files == 0
+    assert "skipped_changed_files=1" in logs
+    assert 'status="SKIPPED"' in logs
+    assert not any(event[0] == "upload" for event in client.events)
+
+
 def test_failed_upload_logs_failure_runtime(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     source = tmp_path / "source"
     source.mkdir()

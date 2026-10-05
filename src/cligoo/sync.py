@@ -55,6 +55,10 @@ class SyncError(RuntimeError):
     """Raised when a sync cannot safely complete."""
 
 
+class LocalFileChangedError(SyncError):
+    """Raised when a source file changes while a sync is in progress."""
+
+
 def _is_buffered_reader_upload_artifact(client: DegooClient, item: RemoteFile) -> bool:
     """Check whether an inaccessible small item is an orphan or has broken contents."""
     if item.size > 4096:
@@ -473,7 +477,9 @@ def run_sync(
             try:
                 current = local.path.stat()
                 if current.st_size != local.size or current.st_mtime_ns != local.mtime_ns:
-                    raise SyncError(f"Local file changed after scanning; it will be retried next run: {local.path}")
+                    raise LocalFileChangedError(
+                        f"Local file changed after scanning; it will be retried next run: {local.path}"
+                    )
 
                 if remote is None:
                     client.upload(local.path, parent_id)
@@ -532,14 +538,17 @@ def run_sync(
 
                 current = local.path.stat()
                 if current.st_size != local.size or current.st_mtime_ns != local.mtime_ns:
-                    raise SyncError(f"Local file changed during upload; it will be retried next run: {local.path}")
+                    raise LocalFileChangedError(
+                        f"Local file changed during upload; it will be retried next run: {local.path}"
+                    )
             except Exception as exc:
+                changed_during_sync = isinstance(exc, LocalFileChangedError)
                 _log(
-                    "ERROR",
+                    "WARN" if changed_during_sync else "ERROR",
                     "File upload finished",
                     path=str(local.path),
                     size_bytes=local.size,
-                    status="FAILED",
+                    status="SKIPPED" if changed_during_sync else "FAILED",
                     runtime_sec=round(time.monotonic() - upload_started, 3),
                     error=str(exc),
                 )
@@ -554,6 +563,7 @@ def run_sync(
             )
 
         completed = 0
+        skipped_changed_files = 0
         failures: list[str] = []
         state_updates: list[tuple[str, int, int]] = []
         stop_scheduling = False
@@ -576,6 +586,9 @@ def run_sync(
                     relative, local = pending.pop(future)
                     try:
                         future.result()
+                    except LocalFileChangedError:
+                        skipped_changed_files += 1
+                        continue
                     except Exception as exc:
                         if future.cancelled():
                             continue
@@ -623,6 +636,7 @@ def run_sync(
             "INFO" if not failures else "ERROR",
             "Sync completed" if not failures else "Sync completed with failures",
             completed_files=completed,
+            skipped_changed_files=skipped_changed_files,
             failed_files=len(failures),
             duration_sec=round(time.monotonic() - started, 2),
         )
