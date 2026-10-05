@@ -12,8 +12,9 @@ import time
 from pathlib import Path
 from typing import Any, Generator, Optional
 
-import httpx
+from curl_cffi import CurlMime
 from curl_cffi import requests as curl_requests
+from curl_cffi.requests.errors import RequestsError
 
 from .auth import get_token
 from .constants import (
@@ -46,6 +47,8 @@ from .queries import (
     SET_SHARE_FILE,
     SET_UPLOAD_FILE,
 )
+
+MAX_RATE_LIMIT_RETRIES = 5
 
 
 class DegooAPIError(Exception):
@@ -146,7 +149,22 @@ class DegooClient:
             import sys
 
             print(f"[DEBUG] --> POST {self._graphql_url}", file=sys.stderr)
-        resp = self._http.post(self._graphql_url, json=body)
+        for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+            resp = self._http.post(self._graphql_url, json=body)
+            if resp.status_code != 429:
+                break
+            if attempt == MAX_RATE_LIMIT_RETRIES:
+                raise DegooAPIError(f"Degoo API rate limit exceeded (HTTP 429) after {MAX_RATE_LIMIT_RETRIES} retries")
+
+            retry_after = resp.headers.get("Retry-After")
+            try:
+                delay = float(retry_after) if retry_after is not None else 0
+            except ValueError:
+                delay = 0
+            if delay <= 0:
+                delay = min(2**attempt, 30)
+            time.sleep(delay)
+
         resp.raise_for_status()
         payload = resp.json()
 
@@ -599,14 +617,22 @@ class DegooClient:
                 time.sleep(backoff)
 
             try:
-                with filepath.open("rb") as file_handle:
-                    upload_resp = httpx.post(
-                        base_url,
-                        data={field_name: str(field_value) for field_name, field_value in form_data.items()},
-                        files={"file": (filename, file_handle, content_type)},
-                        timeout=600,
-                    )
-            except httpx.RequestError as exc:
+                multipart = CurlMime()
+                for field_name, field_value in form_data.items():
+                    multipart.addpart(name=field_name, data=str(field_value))
+                multipart.addpart(
+                    name="file",
+                    filename=filename,
+                    content_type=content_type,
+                    local_path=filepath,
+                )
+                upload_resp = curl_requests.post(
+                    base_url,
+                    multipart=multipart,
+                    timeout=600,
+                    impersonate="chrome124",
+                )
+            except RequestsError as exc:
                 last_exc = exc
                 continue  # network drop — retry
 
