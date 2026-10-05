@@ -918,10 +918,12 @@ Key observations:
 
 ### 9c. Upload Progress
 
-`DegooClient.upload()` wraps the file handle in `_ProgressFile` and supplies it
-to the native `curl_cffi.CurlMime` multipart body. As the request reads the file,
-the wrapper invokes `progress_callback(bytes_read, total)`, enabling incremental
-upload progress in the CLI.
+`DegooClient.upload()` supplies the source path as `local_path` to the native
+`curl_cffi.CurlMime` multipart body. libcurl streams the file contents directly
+from disk; passing a Python file object as `data` would serialize its
+representation instead of the file bytes. The optional `progress_callback` is
+called once the GCS transfer completes because the multipart API does not expose
+per-chunk progress.
 
 ---
 
@@ -1306,22 +1308,21 @@ All internal transfer helpers (`_upload_one`, `_download_one`) therefore raise
 counter and collecting error messages.  `SystemExit(1)` is only raised **once**
 from the main thread after the executor has fully shut down.
 
-### 18h. Directory creation must precede parallel file uploads
+### 18h. Create a directory, upload its files, then descend
 
-`_collect_upload_tasks()` walks the local tree **sequentially**, calling
-`client.mkdir()` + `client.resolve_path_under()` for each sub-folder before
-collecting its files.  Only after the full flat task list is built does the
-`ThreadPoolExecutor` start uploading files in parallel.
+The scheduled sync must not create the entire remote directory tree before
+starting file uploads. For each directory, it creates or resolves that folder,
+uploads the files directly inside it, waits for those uploads to finish, and
+only then creates and processes its child directories. Transfers within the
+current directory may use the configured worker pool, but folder creation and
+descent stay sequential.
 
-This ordering is required because:
-
-1. `mkdir` returns no ID — the ID is recovered by `resolve_path_under()`, which
-   scans the parent's children.
-2. Concurrent `mkdir` calls for sibling directories at the same level are safe,
-   but concurrent calls with their own `resolve_path_under` could return wrong
-   IDs if Degoo's listing has propagation delay.
-
-Keep the collection phase serial; only the file-transfer phase is parallel.
+This order matters because Degoo may initially expose a newly created folder
+as a URL-less Category 6 or empty Category 0 placeholder. These entries are
+still folders, not broken files: sync must reuse them on later runs and must
+not move them to the recycle bin. Uploading contents before descending also
+gives Degoo the child item it needs to promote placeholders into regular
+folders before more nested structure is added.
 
 ### 18i. Upload checksum — wrong algorithm causes Size=0 and no download URL
 

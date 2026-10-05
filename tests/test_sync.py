@@ -175,6 +175,26 @@ def test_scan_remote_tree_treats_cat6_without_url_as_folder_placeholder():
     assert folders["p56"] == "1"
 
 
+def test_scan_remote_tree_treats_empty_cat0_item_without_url_as_folder_placeholder():
+    client = FakeDegooClient()
+    placeholder = {
+        "ID": "1",
+        "Name": "pbd",
+        "Category": 0,
+        "ParentID": "root",
+        "Size": 0,
+        "URL": "",
+    }
+    client.items["1"] = placeholder
+    client.children["root"] = [placeholder]
+    client.children["1"] = []
+
+    files, folders = scan_remote_tree(client, "root")
+
+    assert "pbd" not in files
+    assert folders["pbd"] == "1"
+
+
 def test_run_sync_creates_remote_folders_and_uploads_with_delta_state(tmp_path: Path):
     source = tmp_path / "source"
     source.mkdir()
@@ -281,6 +301,30 @@ def test_run_sync_reuses_empty_degoo_folder_placeholder(tmp_path: Path):
     assert uploaded["ParentID"] == "2"
 
 
+def test_run_sync_reuses_category0_folder_placeholder_on_next_run(tmp_path: Path):
+    source = tmp_path / "source"
+    nested = source / "pbd"
+    nested.mkdir(parents=True)
+    (nested / "file.txt").write_text("content")
+    client = FakeDegooClient()
+    state_path = tmp_path / "state.sqlite3"
+
+    initial = run_sync(client, source, "/Backup", workers=1, state_path=state_path)
+    assert initial.completed_files == 1
+    folder = next(item for item in client.items.values() if item["Name"] == "pbd")
+    folder["Category"] = 0
+    folder["Size"] = 0
+    folder["URL"] = ""
+    client.events.clear()
+
+    subsequent = run_sync(client, source, "/Backup", workers=1, state_path=state_path)
+
+    assert subsequent.unchanged_files == 1
+    assert ("delete", "pbd") not in client.events
+    assert ("mkdir", "pbd") not in client.events
+    assert folder["ID"] in client.items
+
+
 def test_run_sync_promotes_placeholder_before_creating_nested_folder(tmp_path: Path):
     source = tmp_path / "source"
     nested = source / "_lo" / "sub"
@@ -339,7 +383,7 @@ def test_run_sync_refuses_remote_file_conflicting_with_local_directory(tmp_path:
     assert not any(event == ("mkdir", "_lo") for event in client.events)
 
 
-def test_run_sync_recycles_unlinked_empty_file_conflicting_with_directory(tmp_path: Path):
+def test_run_sync_reuses_empty_cat0_placeholder_conflicting_with_directory(tmp_path: Path):
     source = tmp_path / "source"
     nested = source / "_lo"
     nested.mkdir(parents=True)
@@ -362,9 +406,39 @@ def test_run_sync_recycles_unlinked_empty_file_conflicting_with_directory(tmp_pa
     )
 
     assert result.completed_files == 1
-    assert "2" not in client.items
-    assert ("delete", "_lo") in client.events
-    assert ("mkdir", "_lo") in client.events
+    assert "2" in client.items
+    assert ("delete", "_lo") not in client.events
+    assert ("mkdir", "_lo") not in client.events
+    uploaded = next(item for item in client.items.values() if item["Name"] == "file.txt")
+    assert uploaded["ParentID"] == "2"
+
+
+def test_run_sync_uploads_each_directory_before_creating_next(tmp_path: Path):
+    source = tmp_path / "source"
+    (source / "one" / "two").mkdir(parents=True)
+    (source / "other").mkdir()
+    (source / "one" / "root.txt").write_text("root")
+    (source / "one" / "two" / "nested.txt").write_text("nested")
+    (source / "other" / "other.txt").write_text("other")
+    client = FakeDegooClient()
+
+    result = run_sync(
+        client,
+        source,
+        "/Backup",
+        workers=2,
+        state_path=tmp_path / "state.sqlite3",
+    )
+
+    assert result.completed_files == 3
+    events = client.events
+    mkdir_one = events.index(("mkdir", "one"))
+    upload_root = events.index(("upload", "root.txt"))
+    mkdir_two = events.index(("mkdir", "two"))
+    upload_nested = events.index(("upload", "nested.txt"))
+    mkdir_other = events.index(("mkdir", "other"))
+    upload_other = events.index(("upload", "other.txt"))
+    assert mkdir_one < upload_root < mkdir_two < upload_nested < mkdir_other < upload_other
 
 
 def test_run_sync_dry_run_does_not_create_remote_items(tmp_path: Path):

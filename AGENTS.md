@@ -61,7 +61,7 @@ Read these in order when picking up the project from scratch:
 ```text
 src/cligoo/
   __init__.py     Version string (single source of truth, also in pyproject.toml)
-  api.py          DegooClient — all GraphQL calls; _ProgressFile for upload progress
+  api.py          DegooClient — all GraphQL calls and streamed multipart uploads
   auth.py         Token fetch/store/refresh; browser OAuth via Playwright
   chrome.py       Cross-platform Chrome installation and profile detection
   cli.py          Click command group; all `cligoo <cmd>` commands
@@ -136,7 +136,7 @@ The key methods used by CLI commands:
 | `client.get_item(id)` | Full metadata for a numeric ID |
 | `client.search(term, limit)` | Name search across the account |
 | `client.mkdir(path)` | Create a folder; returns `True` |
-| `client.upload(filepath, parent_id, …, progress_callback)` | Upload; uses `_ProgressFile` for incremental progress |
+| `client.upload(filepath, parent_id, …, progress_callback)` | Upload; streams the local file path through curl_cffi multipart |
 | `client.download(item_id, dest_dir, …, progress_callback)` | Download; streams with Content-Length progress |
 | `client.move(ids, dest_folder_id, copy)` | Move or copy items |
 | `client.rename(id, new_name)` | Rename an item |
@@ -167,13 +167,12 @@ for folders), `LastModificationTime`, `LastUploadTime`.
 Worker helpers: `_upload_one`, `_collect_upload_tasks`, `_download_one`,
 `_collect_download_tasks` (all in `cli.py`).
 
-### 6 — Upload progress
+### 6 — Upload data
 
-`_ProgressFile` (in `api.py`) wraps a file path, intercepts every `read()`
-call made by the `curl_cffi` multipart request, and invokes a
-`progress_callback(bytes_read, total)`.
-This is necessary because the GCS multipart POST is a single atomic request —
-there is no per-chunk callback at the HTTP layer.
+`DegooClient.upload()` passes the file path to `CurlMime.addpart(local_path=...)`.
+Do not pass an open file object as `data`: curl_cffi stringifies non-byte values,
+which would upload the object's representation rather than the file contents.
+The optional upload progress callback is notified when the GCS transfer completes.
 
 ### 7 — Shell command dispatch
 

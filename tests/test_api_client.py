@@ -12,6 +12,8 @@ Covers:
 
 from __future__ import annotations
 
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 from unittest.mock import MagicMock, call, patch
 
 from curl_cffi.requests.errors import RequestsError
@@ -243,12 +245,29 @@ def test_gcs_upload_uses_unknown_key_for_unrecognized_extensions(tmp_path):
     assert key_call.kwargs["data"].endswith(".unknown")
 
 
-def test_gcs_upload_passes_file_path_to_curl_multipart(tmp_path):
-    """Pass a path to libcurl, never a file object that could be stringified."""
+def test_gcs_upload_sends_file_bytes_with_curl_multipart(tmp_path):
+    """Exercise the real cURL multipart encoder and ensure it sends file bytes."""
     fp = tmp_path / "snapshot.f"
-    fp.write_bytes(b"kopia snapshot contents")
+    payload = bytes(range(256)) * 4096
+    fp.write_bytes(payload)
+    captured_bodies: list[bytes] = []
+
+    class UploadHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            captured_bodies.append(self.rfile.read(int(self.headers["Content-Length"])))
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, _format, *_args):
+            del _format, _args
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), UploadHandler)
+    server_thread = Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
     auth_data = {
-        "BaseURL": "https://storage.googleapis.com/bucket",
+        "BaseURL": f"http://127.0.0.1:{server.server_port}/upload",
         "KeyPrefix": "prefix/",
         "PolicyBase64": "policy",
         "Signature": "sig",
@@ -256,29 +275,33 @@ def test_gcs_upload_passes_file_path_to_curl_multipart(tmp_path):
         "ACL": None,
         "AdditionalBody": [],
     }
-    mime = MagicMock()
 
-    with (
-        patch("cligoo.api.get_token", return_value="tok"),
-        patch.object(
-            DegooClient,
-            "_gql",
-            side_effect=[
-                {"getBucketWriteAuth4": [{"AuthData": auth_data, "Error": None}]},
-                {"setUploadFile3": "file-id"},
-            ],
-        ),
-        patch("cligoo.api.CurlMime", return_value=mime),
-        patch("cligoo.api.curl_requests.post", return_value=_make_gcs_response(200)),
-    ):
-        client = DegooClient(token="tok")
-        client.upload(fp, "42")
-        client.close()
+    try:
+        with (
+            patch("cligoo.api.get_token", return_value="tok"),
+            patch.object(
+                DegooClient,
+                "_gql",
+                side_effect=[
+                    {"getBucketWriteAuth4": [{"AuthData": auth_data, "Error": None}]},
+                    {"setUploadFile3": "file-id"},
+                ],
+            ),
+        ):
+            client = DegooClient(token="tok")
+            try:
+                assert client.upload(fp, "42") == "file-id"
+            finally:
+                client.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
 
-    file_part = next(call for call in mime.addpart.call_args_list if call.kwargs.get("name") == "file")
-    assert file_part.kwargs["local_path"] == fp
-    assert file_part.kwargs["filename"] == fp.name
-    assert "data" not in file_part.kwargs
+    assert len(captured_bodies) == 1
+    assert len(captured_bodies[0]) > len(payload)
+    assert payload in captured_bodies[0]
+    assert b"<_io.BufferedReader" not in captured_bodies[0]
 
 
 def test_gcs_upload_retries_on_network_error_then_succeeds(tmp_path):

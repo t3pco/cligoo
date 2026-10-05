@@ -32,7 +32,7 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import click
 from rich import box
@@ -1367,6 +1367,7 @@ def _collect_upload_tasks(
     *,
     _cat2_resolver: "Optional[Any]" = None,
     _log_console: "Any" = None,
+    process_files: "Optional[Callable[[list[tuple[Path, str]]], None]]" = None,
 ) -> list[tuple[Path, str]]:
     """Recursively create remote dirs and return ``[(local_file, remote_parent_id)]``.
 
@@ -1383,7 +1384,8 @@ def _collect_upload_tasks(
     Category=2 folder) no resolver is needed.
 
     Directory creation is intentionally sequential; file uploads are deferred
-    and run in parallel by the caller.
+    and run in parallel by the caller. If ``process_files`` is provided, it is
+    called with each directory's direct files before descending into subdirectories.
     """
     import fnmatch
     import os as _os
@@ -1463,28 +1465,39 @@ def _collect_upload_tasks(
         return new_id
 
     tasks: list[tuple[Path, str]] = []
+    direct_files: list[tuple[Path, str]] = []
+    child_directories: list[Path] = []
     for entry in sorted(_os.scandir(local_dir), key=lambda e: (e.is_dir(), e.name)):
         if exclude and any(fnmatch.fnmatch(entry.name, pat) for pat in exclude):
             (_log_console or console).print(f"  [dim]skip[/dim] {entry.name}")
             continue
         if entry.is_dir(follow_symlinks=False):
-            tasks.extend(
-                _collect_upload_tasks(
-                    client,
-                    Path(entry.path),
-                    new_id,
-                    exclude,
-                    _cat2_resolver=_child_resolver,
-                    _log_console=_log_console,
-                )
-            )
-            # After the child mkdir triggered Cat=2 creation, refresh new_id
-            # so any subsequent files in this folder use the real Cat=2 ID.
-            refreshed = client.resolve_path_under(actual_parent_id, _folder_name)
-            if refreshed is not None and client.is_folder(refreshed):
-                new_id = str(refreshed["ID"])
+            child_directories.append(Path(entry.path))
         elif entry.is_file(follow_symlinks=False):
-            tasks.append((Path(entry.path), new_id))
+            direct_files.append((Path(entry.path), new_id))
+
+    if process_files is None:
+        tasks.extend(direct_files)
+    elif direct_files:
+        process_files(direct_files)
+
+    for child_directory in child_directories:
+        tasks.extend(
+            _collect_upload_tasks(
+                client,
+                child_directory,
+                new_id,
+                exclude,
+                _cat2_resolver=_child_resolver,
+                _log_console=_log_console,
+                process_files=process_files,
+            )
+        )
+        # After the child has been fully processed, refresh new_id in case
+        # Degoo promoted the placeholder to a real folder.
+        refreshed = client.resolve_path_under(actual_parent_id, _folder_name)
+        if refreshed is not None and client.is_folder(refreshed):
+            new_id = str(refreshed["ID"])
     return tasks
 
 

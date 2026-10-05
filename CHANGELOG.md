@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.2] — 2026-10-05
+
+### Fixed
+
+- Sync now treats empty, URL-less Category 0 entries as Degoo folder placeholders
+  and reuses them instead of moving them to the recycle bin.
+- Sync now uploads the direct files in each directory before creating and
+  processing its child directories, allowing Degoo to promote folder
+  placeholders before deeper folders are created.
+
+### Changed
+
+- Include the cligoo version in the backup scheduler startup log to identify the
+  exact application version running in a container.
+
+### Tests
+
+- Added an end-to-end regression test for the cURL multipart upload path. It verifies
+  that file payload bytes are streamed from the path, rather than serializing a
+  Python file object's representation.
+
 ## [0.1.1] — 2026-03-15
 
 ### Added

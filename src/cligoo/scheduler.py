@@ -10,6 +10,7 @@ import time
 
 from croniter import CroniterBadCronError, CroniterBadDateError, croniter
 
+from . import __version__
 from .sync import _log
 
 
@@ -94,6 +95,7 @@ def main() -> int:
     _log(
         "INFO",
         "Backup scheduler initialized",
+        cligoo_version=__version__,
         source=source,
         target=target,
         workers=workers,

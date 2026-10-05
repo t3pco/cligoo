@@ -104,8 +104,17 @@ def _is_created_folder(client: DegooClient, item: dict) -> bool:
 
 
 def _is_folder_ghost(item: dict) -> bool:
-    """Identify Degoo's Category=6 placeholder, which has no download URL."""
-    return str(item.get("Category")) == "6" and not item.get("URL")
+    """Identify Degoo's URL-less folder placeholders, including Category=0 ghosts."""
+    if item.get("URL"):
+        return False
+    category = str(item.get("Category"))
+    if category == "6":
+        return True
+    try:
+        size = int(item.get("Size") or 0)
+    except (TypeError, ValueError):
+        return False
+    return category == "0" and size == 0
 
 
 class SyncState:
@@ -437,33 +446,10 @@ def run_sync(
                 remote_files.pop(relative)
         from .cli import _collect_upload_tasks
 
-        upload_parents: dict[str, str] = {relative: root_id for relative in local_files if "/" not in relative}
         top_level_directories = sorted(
             (directory for directory in local_directories if "/" not in directory),
             key=str.casefold,
         )
-        for relative in top_level_directories:
-            if relative not in directories_with_files:
-                continue
-            for local_path, parent_id in _collect_upload_tasks(
-                client,
-                local_root / relative,
-                root_id,
-            ):
-                local_relative = local_path.relative_to(local_root).as_posix()
-                upload_parents[local_relative] = parent_id
-
-        def pending_uploads() -> Iterator[tuple[str, LocalFile, RemoteFile | None, str]]:
-            for relative, local in local_files.items():
-                remote = remote_files.get(relative)
-                cached = saved_fingerprints.get(relative)
-                if remote is not None and remote.size == local.size:
-                    if cached is None or _fingerprint_matches(local, cached):
-                        continue
-                parent_id = upload_parents.get(relative)
-                if parent_id is None:
-                    raise SyncError(f"Remote parent folder is missing for {relative}")
-                yield relative, local, remote, parent_id
 
         def upload_one(local: LocalFile, remote: RemoteFile | None, parent_id: str) -> None:
             upload_started = time.monotonic()
@@ -568,18 +554,32 @@ def run_sync(
         state_updates: list[tuple[str, int, int]] = []
         stop_scheduling = False
 
-        iterator = iter(pending_uploads())
         max_pending = max(workers, workers * 2)
-        pending: dict[Future[None], tuple[str, LocalFile]] = {}
+        local_files_by_path = {entry.path: (relative, entry) for relative, entry in local_files.items()}
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            while len(pending) < max_pending:
-                try:
-                    relative, local, remote, parent_id = next(iterator)
-                except StopIteration:
-                    break
-                pending[executor.submit(upload_one, local, remote, parent_id)] = (relative, local)
+        class StopDirectoryTraversal(Exception):
+            """Stop creating further remote directories after a fatal upload failure."""
 
+        def upload_directory_files(tasks: list[tuple[Path, str]], executor: ThreadPoolExecutor) -> None:
+            nonlocal completed, skipped_changed_files, stop_scheduling
+            iterator = iter(tasks)
+            pending: dict[Future[None], tuple[str, LocalFile]] = {}
+
+            def schedule_until_full() -> None:
+                while not stop_scheduling and len(pending) < max_pending:
+                    try:
+                        local_path, parent_id = next(iterator)
+                    except StopIteration:
+                        return
+                    relative, local = local_files_by_path[local_path]
+                    remote = remote_files.get(relative)
+                    cached = saved_fingerprints.get(relative)
+                    if remote is not None and remote.size == local.size:
+                        if cached is None or _fingerprint_matches(local, cached):
+                            continue
+                    pending[executor.submit(upload_one, local, remote, parent_id)] = (relative, local)
+
+            schedule_until_full()
             while pending:
                 finished, _ = wait(pending, return_when=FIRST_COMPLETED)
                 for future in finished:
@@ -588,7 +588,6 @@ def run_sync(
                         future.result()
                     except LocalFileChangedError:
                         skipped_changed_files += 1
-                        continue
                     except Exception as exc:
                         if future.cancelled():
                             continue
@@ -597,28 +596,39 @@ def run_sync(
                             stop_scheduling = True
                             _log(
                                 "ERROR",
-                                "Stopping new uploads after a permanent Degoo API error",
+                                "Stopping new uploads and directory creation after a permanent Degoo API error",
                                 path=relative,
                             )
                             for queued in pending:
                                 queued.cancel()
-                        continue
-                    state_updates.append((relative, local.size, local.mtime_ns))
-                    completed += 1
-                    if len(state_updates) >= 500:
-                        state.save_many(iter(state_updates))
-                        state_updates.clear()
+                    else:
+                        state_updates.append((relative, local.size, local.mtime_ns))
+                        completed += 1
+                        if len(state_updates) >= 500:
+                            state.save_many(iter(state_updates))
+                            state_updates.clear()
+                schedule_until_full()
 
-                    if stop_scheduling:
+            if stop_scheduling:
+                raise StopDirectoryTraversal
+
+        root_file_tasks = [(local.path, root_id) for relative, local in local_files.items() if "/" not in relative]
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            try:
+                upload_directory_files(root_file_tasks, executor)
+                for relative in top_level_directories:
+                    if relative not in directories_with_files:
+                        _log("INFO", "Skipping empty local directory", path=relative)
                         continue
-                    try:
-                        next_relative, next_local, next_remote, next_parent = next(iterator)
-                    except StopIteration:
-                        continue
-                    pending[executor.submit(upload_one, next_local, next_remote, next_parent)] = (
-                        next_relative,
-                        next_local,
+                    _collect_upload_tasks(
+                        client,
+                        local_root / relative,
+                        root_id,
+                        process_files=lambda tasks: upload_directory_files(tasks, executor),
                     )
+            except StopDirectoryTraversal:
+                pass
 
         state.save_many(iter(state_updates))
         summary = SyncSummary(
