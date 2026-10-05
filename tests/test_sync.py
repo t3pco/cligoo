@@ -25,6 +25,7 @@ class FakeDegooClient:
         self.max_active_uploads = 0
         self._lock = threading.Lock()
         self.fail_upload = False
+        self.upload_returns_bool = False
         self.fail_rename_on_call: int | None = None
         self.rename_calls = 0
         self.mkdir_returns_bool = False
@@ -115,7 +116,7 @@ class FakeDegooClient:
         self.events.append(("rename", new_name))
         return "OK"
 
-    def upload(self, filepath: Path, parent_id: str, *, name: str | None = None) -> str:
+    def upload(self, filepath: Path, parent_id: str, *, name: str | None = None) -> str | bool:
         if self.fail_upload:
             raise RuntimeError("upload failed")
         with self._lock:
@@ -135,7 +136,7 @@ class FakeDegooClient:
             self.items[item_id] = item
             self.children.setdefault(parent_id, []).append(item)
             self.events.append(("upload", filepath.name))
-            return item_id
+            return True if self.upload_returns_bool else item_id
         finally:
             with self._lock:
                 self.active_uploads -= 1
@@ -190,6 +191,7 @@ def test_run_sync_creates_remote_folders_and_uploads_with_delta_state(tmp_path: 
     assert ("mkdir", "Backup") in client.events
     assert ("mkdir", "one") in client.events
 
+    file_path.write_bytes(b"other")
     file_path.write_bytes(b"other")
     file_path.touch()
     changed = run_sync(client, source, "/Backup", workers=2, state_path=state_path)
@@ -248,7 +250,7 @@ def test_run_sync_retries_folder_lookup_after_eventual_visibility(tmp_path: Path
     assert result.completed_files == 1
     assert ("mkdir", "_lo") in client.events
     assert ("upload", "file.txt") in client.events
-    assert [call.args for call in sleep.call_args_list].count((5,)) == 2
+    assert [call.args for call in sleep.call_args_list].count((1,)) == 2
 
 
 def test_run_sync_reuses_empty_degoo_folder_placeholder(tmp_path: Path):
@@ -335,6 +337,34 @@ def test_run_sync_refuses_remote_file_conflicting_with_local_directory(tmp_path:
         )
 
     assert not any(event == ("mkdir", "_lo") for event in client.events)
+
+
+def test_run_sync_recycles_unlinked_empty_file_conflicting_with_directory(tmp_path: Path):
+    source = tmp_path / "source"
+    nested = source / "_lo"
+    nested.mkdir(parents=True)
+    (nested / "file.txt").write_text("content")
+    client = FakeDegooClient()
+    target = {"ID": "1", "Name": "Backup", "Category": 2, "ParentID": "0", "Size": 0, "URL": ""}
+    conflict = {"ID": "2", "Name": "_lo", "Category": 0, "ParentID": "1", "Size": 0, "URL": ""}
+    client.items.update({"1": target, "2": conflict})
+    client.children["0"].append(target)
+    client.children["1"] = [conflict]
+    client.children["2"] = []
+    client.next_id = 3
+
+    result = run_sync(
+        client,
+        source,
+        "/Backup",
+        workers=1,
+        state_path=tmp_path / "state.sqlite3",
+    )
+
+    assert result.completed_files == 1
+    assert "2" not in client.items
+    assert ("delete", "_lo") in client.events
+    assert ("mkdir", "_lo") in client.events
 
 
 def test_run_sync_dry_run_does_not_create_remote_items(tmp_path: Path):

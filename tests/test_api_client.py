@@ -168,6 +168,42 @@ def test_gcs_upload_succeeds_first_attempt(tmp_path):
     assert call_count == 1
 
 
+def test_gcs_upload_uses_unknown_key_for_unrecognized_extensions(tmp_path):
+    fp = tmp_path / ".shards"
+    fp.write_bytes(b"payload")
+    auth_data = {
+        "BaseURL": "https://storage.googleapis.com/bucket",
+        "KeyPrefix": "prefix/",
+        "PolicyBase64": "policy",
+        "Signature": "sig",
+        "AccessKey": {"Key": "GoogleAccessId", "Value": "svc"},
+        "ACL": None,
+        "AdditionalBody": [],
+    }
+    mime = MagicMock()
+
+    with (
+        patch("cligoo.api.get_token", return_value="tok"),
+        patch.object(
+            DegooClient,
+            "_gql",
+            side_effect=[
+                {"getBucketWriteAuth4": [{"AuthData": auth_data, "Error": None}]},
+                {"setUploadFile3": "file-id"},
+            ],
+        ),
+        patch("cligoo.api.CurlMime", return_value=mime),
+        patch("cligoo.api.curl_requests.post", return_value=_make_gcs_response(200)),
+    ):
+        client = DegooClient(token="tok")
+        client.upload(fp, "42")
+        client.close()
+
+    key_call = next(call for call in mime.addpart.call_args_list if call.kwargs.get("name") == "key")
+    assert key_call.kwargs["data"].startswith("prefix/unknown/")
+    assert key_call.kwargs["data"].endswith(".unknown")
+
+
 def test_gcs_upload_retries_on_network_error_then_succeeds(tmp_path):
     """Network error on attempt 1, success on attempt 2."""
     effects = [

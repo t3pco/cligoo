@@ -1440,7 +1440,7 @@ def _collect_upload_tasks(
                 (_log_console or console).print(
                     f"  [dim]waiting for Degoo to list {local_dir.name} ({attempt + 1}/{lookup_attempts - 1})[/dim]"
                 )
-                time.sleep(5)
+                time.sleep(1)
 
     if new_folder is None:
         if folder_existed:

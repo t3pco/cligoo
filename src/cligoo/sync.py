@@ -81,7 +81,7 @@ def _resolve_created_item(client: DegooClient, parent_id: str, name: str) -> dic
         if item is not None:
             return item
         if attempt < 5:
-            delay = 5
+            delay = 1
             _log(
                 "INFO",
                 "New remote folder is not visible yet; retrying lookup",
@@ -427,7 +427,7 @@ def run_sync(
                     if remaining is None or client.is_folder(remaining):
                         break
                     if attempt < 5:
-                        time.sleep(5)
+                        time.sleep(0.5)
                 else:
                     raise SyncError(f"Malformed remote file {relative!r} remains after moving it to the recycle bin")
                 remote_files.pop(relative)
@@ -482,7 +482,7 @@ def run_sync(
                     staging_name = f".cligoo-sync-new-{transaction_id}{local.path.suffix}"
                     backup_name = f".cligoo-sync-old-{transaction_id}"
                     staged_id = client.upload(local.path, parent_id, name=staging_name)
-                    if not staged_id or staged_id == "OK" or not staged_id.isdigit():
+                    if not isinstance(staged_id, str) or not staged_id.isdigit():
                         staged_item = client.resolve_path_under(parent_id, staging_name)
                         if staged_item is None:
                             raise SyncError(f"Upload did not return an ID for staged file {local.path}")
@@ -556,6 +556,7 @@ def run_sync(
         completed = 0
         failures: list[str] = []
         state_updates: list[tuple[str, int, int]] = []
+        stop_scheduling = False
 
         iterator = iter(pending_uploads())
         max_pending = max(workers, workers * 2)
@@ -575,8 +576,19 @@ def run_sync(
                     relative, local = pending.pop(future)
                     try:
                         future.result()
-                    except Exception:
+                    except Exception as exc:
+                        if future.cancelled():
+                            continue
                         failures.append(relative)
+                        if isinstance(exc, DegooAPIError):
+                            stop_scheduling = True
+                            _log(
+                                "ERROR",
+                                "Stopping new uploads after a permanent Degoo API error",
+                                path=relative,
+                            )
+                            for queued in pending:
+                                queued.cancel()
                         continue
                     state_updates.append((relative, local.size, local.mtime_ns))
                     completed += 1
@@ -584,6 +596,8 @@ def run_sync(
                         state.save_many(iter(state_updates))
                         state_updates.clear()
 
+                    if stop_scheduling:
+                        continue
                     try:
                         next_relative, next_local, next_remote, next_parent = next(iterator)
                     except StopIteration:

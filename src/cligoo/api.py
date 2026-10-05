@@ -569,7 +569,8 @@ class DegooClient:
         # Determine MIME type so it satisfies the policy's Content-Type condition
         import mimetypes
 
-        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        guessed_content_type = mimetypes.guess_type(filename)[0]
+        content_type = guessed_content_type or "application/octet-stream"
 
         form_data: dict[str, Any] = {}
         # AccessKey is a single {Key, Value} object (Google service account ID)
@@ -580,7 +581,8 @@ class DegooClient:
         form_data["signature"] = auth_data["Signature"]
         # GCS key format (required by the policy): {KeyPrefix}{ext}/{checksum}.{ext}
         # e.g. "ADfzPh/6tnxDg/pdf/ChQVgjMd4f9UAnRnJNB8-dCTOpsPLBAA.pdf"
-        ext = Path(filename).suffix.lstrip(".").lower() or "bin"
+        ext = Path(filename).suffix.lstrip(".").lower() if guessed_content_type else "unknown"
+        ext = ext or "unknown"
         form_data["key"] = f"{key_prefix}{ext}/{checksum}.{ext}"
         form_data["Content-Type"] = content_type
         if auth_data.get("ACL"):
